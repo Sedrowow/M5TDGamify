@@ -175,9 +175,19 @@ bool ui_canvas_ready = false;
 // HUD animation state
 float hud_health_anim = 100.0f;
 float hud_level_anim = 0.0f;  // 0..100
+uint16_t hud_display_level = 1;
+uint16_t hud_levelup_pending = 0;
+bool hud_levelup_fast = false;
+uint32_t hud_levelup_last_step_ms = 0;
+uint16_t hud_levelup_step_ms = 220;
+uint16_t hud_levelup_sound_ms = 140;
+uint32_t hud_bar_sound_last_ms = 0;
 
 void triggerFeedback(FeedbackEvent ev);
 void updateHudAnimation();
+void playHealthBarBuzz();
+void playXPBarBuzz();
+void playLevelUpBuzz(uint16_t duration_ms);
 
 void setStatus(const char* message, uint32_t ms = 2500) {
     strncpy(status_line, message, sizeof(status_line) - 1);
@@ -215,15 +225,77 @@ void triggerFeedback(FeedbackEvent ev) {
     }
 }
 
+void playHealthBarBuzz() {
+    const GlobalSettings& cfg = settings_system.settings();
+    if (!cfg.audio_feedback_enabled) return;
+    M5Cardputer.Speaker.setVolume(cfg.audio_volume);
+    // Low triangle-like buzz: up then down.
+    M5Cardputer.Speaker.tone(170, 28);
+    M5Cardputer.Speaker.tone(220, 24);
+    M5Cardputer.Speaker.tone(170, 28);
+}
+
+void playXPBarBuzz() {
+    const GlobalSettings& cfg = settings_system.settings();
+    if (!cfg.audio_feedback_enabled) return;
+    M5Cardputer.Speaker.setVolume(cfg.audio_volume);
+    // Saw-like buzz: rising steps.
+    M5Cardputer.Speaker.tone(380, 20);
+    M5Cardputer.Speaker.tone(520, 20);
+    M5Cardputer.Speaker.tone(680, 20);
+}
+
+void playLevelUpBuzz(uint16_t duration_ms) {
+    const GlobalSettings& cfg = settings_system.settings();
+    if (!cfg.audio_feedback_enabled) return;
+    M5Cardputer.Speaker.setVolume(cfg.audio_volume);
+    M5Cardputer.Speaker.tone(1700, duration_ms);
+}
+
 void updateHudAnimation() {
     float target_health = (float)health_system.getHealth();
-    float target_level = (float)level_system.getXPProgress();
+    if (hud_display_level == 0) hud_display_level = level_system.getLevel();
+
+    float target_level = (hud_levelup_pending > 0) ? 100.0f : (float)level_system.getXPProgress();
 
     hud_health_anim += (target_health - hud_health_anim) * 0.18f;
-    hud_level_anim += (target_level - hud_level_anim) * 0.20f;
+    hud_level_anim += (target_level - hud_level_anim) * (hud_levelup_pending > 0 ? 0.35f : 0.20f);
 
     if (fabsf(target_health - hud_health_anim) < 0.2f) hud_health_anim = target_health;
     if (fabsf(target_level - hud_level_anim) < 0.2f) hud_level_anim = target_level;
+
+    // Bar-change buzz while bar is animating.
+    if (millis() - hud_bar_sound_last_ms > 120) {
+        if (fabsf(target_health - hud_health_anim) > 0.8f) {
+            playHealthBarBuzz();
+            hud_bar_sound_last_ms = millis();
+        } else if (fabsf(target_level - hud_level_anim) > 0.8f) {
+            playXPBarBuzz();
+            hud_bar_sound_last_ms = millis();
+        }
+    }
+
+    // Per-level XP animation and sound (instead of instant jump).
+    if (hud_levelup_pending > 0 && hud_level_anim >= 99.0f && millis() - hud_levelup_last_step_ms >= hud_levelup_step_ms) {
+        hud_levelup_last_step_ms = millis();
+        hud_levelup_pending--;
+        if (hud_display_level < level_system.getLevel()) hud_display_level++;
+
+        playLevelUpBuzz(hud_levelup_sound_ms);
+
+        if (settings_system.settings().visual_feedback_enabled) {
+            if (!hud_levelup_fast || hud_levelup_pending == 0) {
+                setStatus("LEVEL UP!", hud_levelup_fast ? 700 : 1200);
+            }
+        }
+
+        if (hud_levelup_pending > 0) {
+            hud_level_anim = 0.0f;
+        } else {
+            hud_display_level = level_system.getLevel();
+            hud_level_anim = (float)level_system.getXPProgress();
+        }
+    }
 }
 
 void renderScreensaver() {
@@ -928,6 +1000,7 @@ void completeTaskAtIndex(uint16_t task_index) {
         return;
     }
 
+    uint16_t start_level = level_system.getLevel();
     float health_mul = health_system.getXPMultiplier();
     uint32_t player_xp = health_system.applyHealthMultiplier(base_xp);
     uint16_t player_levels = level_system.addXPWithMultiplier(base_xp, health_mul);
@@ -953,7 +1026,12 @@ void completeTaskAtIndex(uint16_t task_index) {
 
     triggerFeedback(FEEDBACK_TASK_COMPLETE);
     if (player_levels > 0) {
-        triggerFeedback(FEEDBACK_LEVEL_UP);
+        hud_display_level = start_level;
+        hud_levelup_pending = player_levels;
+        hud_levelup_fast = player_levels > 10;
+        hud_levelup_step_ms = hud_levelup_fast ? 90 : 220;
+        hud_levelup_sound_ms = hud_levelup_fast ? 55 : 140;
+        hud_levelup_last_step_ms = millis();
     }
 
     char msg[120];
@@ -1422,8 +1500,7 @@ void handleKeyInput(char key) {
     switch (current_screen) {
         case UI_DASHBOARD:
             if (key == 'm' || key == 'M') {
-                health_system.setManualMode();
-                setStatus("Manual health mode");
+                setStatus("Manual mode in SETTINGS only", 1200);
             } else if (key == 'b' || key == 'B') {
                 health_system.setTimeBasedMode();
                 health_system.setTimeBasedCycle(8, 22);
@@ -1584,7 +1661,8 @@ void renderUI() {
     ui_canvas.setCursor(6, 6);
     ui_canvas.printf("%s", screen_name);
     ui_canvas.setCursor(80, 6);
-    ui_canvas.printf("LVL%d  HP%d", level_system.getLevel(), health_system.getHealth());
+    uint16_t shown_level = (hud_levelup_pending > 0) ? hud_display_level : level_system.getLevel();
+    ui_canvas.printf("LVL%d  HP%d", shown_level, health_system.getHealth());
 
     // HUD bars - Level and Health
     updateHudAnimation();
@@ -1599,9 +1677,7 @@ void renderUI() {
     ui_canvas.setTextColor(0xFFFF);
     ui_canvas.setTextSize(1);
     ui_canvas.setCursor(145, 3);
-    uint32_t cur_xp = level_system.getCurrentXP();
-    uint32_t next_xp = level_system.getXPForNextLevel();
-    ui_canvas.printf("%lu/%lu", (unsigned long)cur_xp, (unsigned long)next_xp);
+    ui_canvas.printf("XP %3d%%", (int)hud_level_anim);
     
     // Health percentage when in manual health input mode (transparent)
     if (manual_health_active) {
@@ -1969,6 +2045,24 @@ void loop() {
     M5Cardputer.update();
     health_system.setCurrentTime(time_sync.getCurrentTime());
 
+    // Screensaver mode: render continuously, any key exits.
+    if (screensaver_active) {
+        if (M5Cardputer.Keyboard.isChange()) {
+            M5Cardputer.Keyboard.updateKeysState();
+            auto& sk = M5Cardputer.Keyboard.keysState();
+            if (sk.enter || sk.del || sk.word.size() > 0) {
+                screensaver_active = false;
+                setStatus("Screensaver OFF", 900);
+            }
+        }
+        if (screensaver_active && millis() - last_ui_render_ms >= 33) {
+            renderScreensaver();
+            last_ui_render_ms = millis();
+        }
+        delay(20);
+        return;
+    }
+
     // Auto-apply manual health after 4 seconds of no input
     if (manual_health_active && millis() - manual_health_last_input_time > 4000) {
         uint8_t new_health = (manual_health_input_percent * 100) / 100;
@@ -1989,7 +2083,7 @@ void loop() {
             if (ch == 27) esc_pressed = true;
             if (ch == '`') backtick_pressed = true;
         }
-        if (esc_pressed) {
+        if (esc_pressed || backtick_pressed) {
             openScreenSelector();
             return;
         }
@@ -2023,11 +2117,6 @@ void loop() {
                     // Increase by 1
                     if (manual_health_input_percent < 100) manual_health_input_percent++;
                     manual_health_last_input_time = millis();
-                    handled = true;
-                } else if (ch == '`') {
-                    // Backtick cancels manual health.
-                    manual_health_active = false;
-                    setStatus("Health input cancelled", 1000);
                     handled = true;
                 }
             }
@@ -2088,12 +2177,6 @@ void loop() {
 
         // DEL scans WiFi only in WiFi settings section.
         if (!nav_handled && !text_input_active && ks.del && current_screen == UI_SETTINGS && sett_section == SETT_WIFI) {
-            handleNavCommand(NAV_BACK);
-            nav_handled = true;
-        }
-
-        // Backtick remains the generic back/cancel key.
-        if (!nav_handled && backtick_pressed) {
             handleNavCommand(NAV_BACK);
             nav_handled = true;
         }
