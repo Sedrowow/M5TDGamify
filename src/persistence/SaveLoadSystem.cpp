@@ -177,6 +177,35 @@ bool SaveLoadSystem::parseKeyValueLine(const String& line, String& key, String& 
     return true;
 }
 
+bool SaveLoadSystem::loadProfileStats(const String& profile_name, ProfileInfo& profile) const {
+    String data;
+    if (!readTextFile(profileStatePath(profile_name), data)) {
+        return false;
+    }
+
+    int start = 0;
+    while (start < data.length()) {
+        int end = data.indexOf('\n', start);
+        if (end < 0) end = data.length();
+
+        String line = data.substring(start, end);
+        line.trim();
+
+        String key, value;
+        if (parseKeyValueLine(line, key, value)) {
+            if (key == "tasks_completed") profile.tasks_completed = (uint32_t)value.toInt();
+            else if (key == "tasks_failed") profile.tasks_failed = (uint32_t)value.toInt();
+            else if (key == "tasks_created") profile.tasks_created = (uint32_t)value.toInt();
+            else if (key == "money_gained") profile.money_gained = (int32_t)value.toInt();
+            else if (key == "money_spent") profile.money_spent = (int32_t)value.toInt();
+        }
+
+        start = end + 1;
+    }
+
+    return true;
+}
+
 bool SaveLoadSystem::saveGlobalSettings() {
     String data = "active_profile=" + active_profile_name + "\n";
     data += "active_profile_description=" + active_profile_description + "\n";
@@ -364,6 +393,67 @@ bool SaveLoadSystem::setActiveProfile(const String& profile_name, const String& 
     return saveGlobalSettings();
 }
 
+bool SaveLoadSystem::deleteProfile(const String& profile_name, const String& fallback_name,
+                                   const String& fallback_description) {
+    if (!active_fs || !sd_ready) {
+        last_error = "Profile delete requires SD";
+        return false;
+    }
+
+    String safe_name = sanitizeProfileName(profile_name);
+    if (safe_name.length() == 0) {
+        last_error = "Invalid profile name";
+        return false;
+    }
+
+    ProfileInfo profiles[16];
+    uint8_t count = 0;
+    if (!loadProfileIndex(profiles, 16, count)) {
+        last_error = "Profile index load failed";
+        return false;
+    }
+
+    int remove_idx = -1;
+    for (uint8_t i = 0; i < count; i++) {
+        if (profiles[i].name == safe_name) {
+            remove_idx = i;
+            break;
+        }
+    }
+    if (remove_idx < 0) {
+        last_error = "Profile not found";
+        return false;
+    }
+
+    active_fs->remove(profileSkillsPath(safe_name).c_str());
+    active_fs->remove(profileStatePath(safe_name).c_str());
+    active_fs->remove(profileTasksPath(safe_name).c_str());
+    active_fs->remove(profileShopStatePath(safe_name).c_str());
+    active_fs->rmdir(profileDir(safe_name).c_str());
+
+    for (uint8_t i = (uint8_t)remove_idx; i + 1 < count; i++) {
+        profiles[i] = profiles[i + 1];
+    }
+    if (count > 0) count--;
+
+    if (!saveProfileIndex(profiles, count)) {
+        last_error = "Profile index save failed";
+        return false;
+    }
+
+    if (active_profile_name == safe_name) {
+        if (fallback_name.length() > 0) {
+            return setActiveProfile(fallback_name, fallback_description);
+        }
+        if (count > 0) {
+            return setActiveProfile(profiles[0].name, profiles[0].description);
+        }
+        return setActiveProfile("default", "Default profile");
+    }
+
+    return true;
+}
+
 bool SaveLoadSystem::listProfiles(ProfileInfo profiles[], uint8_t max_count, uint8_t& out_count) const {
     if (!active_fs) {
         out_count = 0;
@@ -380,11 +470,18 @@ bool SaveLoadSystem::listProfiles(ProfileInfo profiles[], uint8_t max_count, uin
         profiles[0].description = active_profile_description;
     }
 
+    for (uint8_t i = 0; i < out_count; i++) {
+        loadProfileStats(profiles[i].name, profiles[i]);
+    }
+
     return true;
 }
 
 bool SaveLoadSystem::saveCurrentProfileState(const LevelSystem& level_system, const HealthSystem& health_system,
-                                             int32_t money, int8_t timezone_offset) {
+                                             int32_t money, int8_t timezone_offset,
+                                             uint32_t tasks_completed, uint32_t tasks_failed,
+                                             uint32_t tasks_created, int32_t money_gained,
+                                             int32_t money_spent) {
     String path = profileStatePath(active_profile_name);
 
     String data = "level=" + String(level_system.getLevel()) + "\n";
@@ -396,12 +493,20 @@ bool SaveLoadSystem::saveCurrentProfileState(const LevelSystem& level_system, co
     data += "start_hour=" + String((int)health_system.getTimeBasedStartHour()) + "\n";
     data += "end_hour=" + String((int)health_system.getTimeBasedEndHour()) + "\n";
     data += "timezone_offset=" + String((int)timezone_offset) + "\n";
+    data += "tasks_completed=" + String(tasks_completed) + "\n";
+    data += "tasks_failed=" + String(tasks_failed) + "\n";
+    data += "tasks_created=" + String(tasks_created) + "\n";
+    data += "money_gained=" + String(money_gained) + "\n";
+    data += "money_spent=" + String(money_spent) + "\n";
 
     return writeTextFile(path, data);
 }
 
 bool SaveLoadSystem::loadCurrentProfileState(LevelSystem& level_system, HealthSystem& health_system,
-                                             int32_t& money, int8_t& timezone_offset) {
+                                             int32_t& money, int8_t& timezone_offset,
+                                             uint32_t& tasks_completed, uint32_t& tasks_failed,
+                                             uint32_t& tasks_created, int32_t& money_gained,
+                                             int32_t& money_spent) {
     String path = profileStatePath(active_profile_name);
     String data;
     if (!readTextFile(path, data)) {
@@ -440,6 +545,11 @@ bool SaveLoadSystem::loadCurrentProfileState(LevelSystem& level_system, HealthSy
             else if (key == "start_hour") loaded_start_hour = value.toInt();
             else if (key == "end_hour") loaded_end_hour = value.toInt();
             else if (key == "timezone_offset") loaded_timezone = value.toInt();
+            else if (key == "tasks_completed") tasks_completed = (uint32_t)value.toInt();
+            else if (key == "tasks_failed") tasks_failed = (uint32_t)value.toInt();
+            else if (key == "tasks_created") tasks_created = (uint32_t)value.toInt();
+            else if (key == "money_gained") money_gained = (int32_t)value.toInt();
+            else if (key == "money_spent") money_spent = (int32_t)value.toInt();
         }
 
         start = end + 1;
@@ -489,6 +599,13 @@ bool SaveLoadSystem::saveTasks(const TaskManager& task_manager) {
     Task* tasks = task_manager.getAllTasks(count);
     for (uint16_t i = 0; i < count; i++) {
         const Task& t = tasks[i];
+        String linked_skills = "";
+        for (uint8_t k = 0; k < t.linked_skill_count; k++) {
+            if (k > 0) linked_skills += ",";
+            linked_skills += String(t.linked_skill_category_ids[k]);
+            linked_skills += ":";
+            linked_skills += String(t.linked_skill_ids[k]);
+        }
         file.print("T|");
         file.print(t.id); file.print("|");
         file.print(t.name); file.print("|");
@@ -497,14 +614,17 @@ bool SaveLoadSystem::saveTasks(const TaskManager& task_manager) {
         file.print((int)t.urgency); file.print("|");
         file.print((int)t.fear); file.print("|");
         file.print((int)t.repetition); file.print("|");
-        file.print(t.duration_minutes); file.print("|");
+        file.print(t.duration_seconds); file.print("|");
         file.print(t.due_date); file.print("|");
         file.print(t.reward_money); file.print("|");
         file.print(t.reward_item_id); file.print("|");
         file.print((int)t.reward_item_quantity); file.print("|");
         file.print(t.linked_skill_category_id); file.print("|");
         file.print(t.linked_skill_id); file.print("|");
+        file.print(linked_skills); file.print("|");
         file.print((int)t.completed); file.print("|");
+        file.print((int)t.failed); file.print("|");
+        file.print((int)t.archived); file.print("|");
         file.print(t.creation_time); file.print("|");
         file.println(t.completion_time);
     }
@@ -541,10 +661,10 @@ bool SaveLoadSystem::loadTasks(TaskManager& task_manager) {
         }
 
         // Parse pipe-separated record.
-        String fields[19];
+        String fields[24];
         uint8_t fcount = 0;
         int start = 0;
-        while (fcount < 19) {
+        while (fcount < 24) {
             int sep = line.indexOf('|', start);
             if (sep < 0) {
                 fields[fcount++] = line.substring(start);
@@ -554,7 +674,7 @@ bool SaveLoadSystem::loadTasks(TaskManager& task_manager) {
             start = sep + 1;
         }
 
-        if (fcount < 19) {
+        if (fcount < 18) {
             continue;
         }
 
@@ -565,16 +685,30 @@ bool SaveLoadSystem::loadTasks(TaskManager& task_manager) {
         uint8_t urgency = (uint8_t)fields[5].toInt();
         uint8_t fear = (uint8_t)fields[6].toInt();
         uint8_t repetition = (uint8_t)fields[7].toInt();
-        uint16_t duration = (uint16_t)fields[8].toInt();
+        uint32_t duration = (uint32_t)fields[8].toInt();
         uint32_t due_date = (uint32_t)fields[9].toInt();
         uint32_t reward_money = (uint32_t)fields[10].toInt();
         uint16_t reward_item_id = (uint16_t)fields[11].toInt();
         uint8_t reward_item_qty = (uint8_t)fields[12].toInt();
         uint16_t linked_cat = (uint16_t)fields[13].toInt();
         uint16_t linked_skill = (uint16_t)fields[14].toInt();
-        bool completed = fields[15].toInt() != 0;
-        uint32_t creation_time = (uint32_t)fields[16].toInt();
-        uint32_t completion_time = (uint32_t)fields[17].toInt();
+        String linked_skills = fields[15];
+        bool completed = false;
+        bool failed = false;
+        bool archived = false;
+        uint32_t creation_time = 0;
+        uint32_t completion_time = 0;
+        if (fcount >= 21) {
+            completed = fields[16].toInt() != 0;
+            failed = fields[17].toInt() != 0;
+            archived = fields[18].toInt() != 0;
+            creation_time = (uint32_t)fields[19].toInt();
+            completion_time = (uint32_t)fields[20].toInt();
+        } else {
+            completed = fields[16].toInt() != 0;
+            creation_time = (uint32_t)fields[17].toInt();
+            completion_time = (uint32_t)fields[18].toInt();
+        }
 
         uint16_t created_id = task_manager.addTask(name, details, difficulty, urgency, fear,
                                                    repetition, duration, due_date, reward_money,
@@ -588,8 +722,30 @@ bool SaveLoadSystem::loadTasks(TaskManager& task_manager) {
             continue;
         }
 
+        task->clearLinkedSkills();
+        if (linked_skills.length() > 0) {
+            int skill_start = 0;
+            while (skill_start < linked_skills.length()) {
+                int comma = linked_skills.indexOf(',', skill_start);
+                String item = (comma < 0) ? linked_skills.substring(skill_start)
+                                          : linked_skills.substring(skill_start, comma);
+                int colon = item.indexOf(':');
+                if (colon > 0) {
+                    uint16_t cat_id = (uint16_t)item.substring(0, colon).toInt();
+                    uint16_t skill_id = (uint16_t)item.substring(colon + 1).toInt();
+                    task->addLinkedSkill(cat_id, skill_id);
+                }
+                if (comma < 0) break;
+                skill_start = comma + 1;
+            }
+        } else if (linked_skill > 0) {
+            task->addLinkedSkill(linked_cat, linked_skill);
+        }
+
         task->id = task_id;
         task->completed = completed;
+        task->failed = failed;
+        task->archived = archived;
         task->creation_time = creation_time;
         task->completion_time = completion_time;
     }
@@ -1018,6 +1174,8 @@ bool SaveLoadSystem::saveGlobalConfig(const GlobalSettings& cfg) {
     data += "wifi_ssid=" + String(cfg.wifi_ssid) + "\n";
     data += "wifi_password=" + String(cfg.wifi_password) + "\n";
     data += "timezone=" + String((int)cfg.timezone_offset) + "\n";
+    data += "timezone_dst=" + String(cfg.timezone_dst ? 1 : 0) + "\n";
+    data += "date_format_us=" + String(cfg.date_format_us ? 1 : 0) + "\n";
     data += "health_time_based=" + String(cfg.health_time_based ? 1 : 0) + "\n";
     data += "health_wake=" + String((int)cfg.health_wake_hour) + "\n";
     data += "health_sleep=" + String((int)cfg.health_sleep_hour) + "\n";
@@ -1050,6 +1208,10 @@ bool SaveLoadSystem::loadGlobalConfig(GlobalSettings& cfg) {
                 cfg.wifi_password[MAX_PASSWORD_LEN - 1] = '\0';
             } else if (key == "timezone") {
                 cfg.timezone_offset = (int8_t)value.toInt();
+            } else if (key == "timezone_dst") {
+                cfg.timezone_dst = value.toInt() != 0;
+            } else if (key == "date_format_us") {
+                cfg.date_format_us = value.toInt() != 0;
             } else if (key == "health_time_based") {
                 cfg.health_time_based = value.toInt() != 0;
             } else if (key == "health_wake") {

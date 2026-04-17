@@ -3,6 +3,8 @@
 
 SettingsSystem::SettingsSystem() : scanned_count(0) {
     _settings.timezone_offset = 0;
+    _settings.timezone_dst = false;
+    _settings.date_format_us = false;
     _settings.wifi_ssid[0] = '\0';
     _settings.wifi_password[0] = '\0';
     _settings.health_time_based = true;
@@ -11,6 +13,7 @@ SettingsSystem::SettingsSystem() : scanned_count(0) {
     _settings.visual_feedback_enabled = true;
     _settings.audio_feedback_enabled = true;
     _settings.audio_volume = 140;
+    _connected_ssid[0] = '\0';
     memset(_networks, 0, sizeof(_networks));
 }
 
@@ -62,11 +65,14 @@ bool SettingsSystem::connectWiFi(const char* ssid, const char* password, uint32_
     } else {
         _settings.wifi_password[0] = '\0';
     }
+    strncpy(_connected_ssid, _settings.wifi_ssid, MAX_SSID_LEN - 1);
+    _connected_ssid[MAX_SSID_LEN - 1] = '\0';
     return true;
 }
 
 void SettingsSystem::disconnectWiFi() {
     WiFi.disconnect(true);
+    _connected_ssid[0] = '\0';
     delay(50);
 }
 
@@ -76,7 +82,7 @@ bool SettingsSystem::isWiFiConnected() const {
 
 const char* SettingsSystem::getConnectedSSID() const {
     if (!isWiFiConnected()) return "";
-    return WiFi.SSID().c_str();
+    return _connected_ssid[0] != '\0' ? _connected_ssid : _settings.wifi_ssid;
 }
 
 void SettingsSystem::getStoredCredentials(char* ssid_out, char* pass_out) const {

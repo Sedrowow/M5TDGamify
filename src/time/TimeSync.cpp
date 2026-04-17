@@ -7,7 +7,8 @@
 #define NTP_UPDATE_INTERVAL 3600  // Resync every hour
 
 TimeSync::TimeSync() 
-    : timezone_offset(0), last_sync_time(0), wifi_connected(false) {}
+        : timezone_offset(0), daylight_saving(false), date_format_us(false),
+            last_sync_time(0), wifi_connected(false) {}
 
 void TimeSync::configureNTP() const {
     // Configure SNTP
@@ -22,17 +23,30 @@ void TimeSync::setTimezoneOffset(int8_t offset) {
     if (offset > 14) offset = 14;
     
     timezone_offset = offset;
-    
+
     // Set timezone environment variable
     char tz_env[32];
-    if (offset >= 0) {
-        snprintf(tz_env, sizeof(tz_env), "UTC-%d", offset);
+    int8_t effective = timezone_offset + (daylight_saving ? 1 : 0);
+    if (effective < -12) effective = -12;
+    if (effective > 14) effective = 14;
+    if (effective >= 0) {
+        snprintf(tz_env, sizeof(tz_env), "UTC-%d", effective);
     } else {
-        snprintf(tz_env, sizeof(tz_env), "UTC+%d", -offset);
+        snprintf(tz_env, sizeof(tz_env), "UTC+%d", -effective);
     }
     
     setenv("TZ", tz_env, 1);
     tzset();
+}
+
+void TimeSync::setDaylightSavingEnabled(bool enabled) {
+    daylight_saving = enabled;
+    // Re-apply TZ with current base offset.
+    setTimezoneOffset(timezone_offset);
+}
+
+void TimeSync::setDateFormatUS(bool enabled) {
+    date_format_us = enabled;
 }
 
 String TimeSync::getTimezoneString() const {
@@ -69,7 +83,8 @@ bool TimeSync::syncWithWiFi(const char* ssid, const char* password, uint32_t tim
     Serial.println("[TimeSync] WiFi connected!");
     wifi_connected = true;
 
-    // Configure NTP
+    // Stop any running SNTP instance before re-init to avoid crash.
+    sntp_stop();
     configureNTP();
 
     // Wait for NTP sync
@@ -83,6 +98,8 @@ bool TimeSync::syncWithWiFi(const char* ssid, const char* password, uint32_t tim
     Serial.println();
 
     last_sync_time = now;
+    // Re-apply timezone after NTP sync so DST/offset are honoured.
+    setTimezoneOffset(timezone_offset);
     Serial.printf("[TimeSync] Time synced! Current: %s\n", getCurrentTimeString().c_str());
 
     return true;
@@ -120,7 +137,7 @@ String TimeSync::getCurrentTimeString() const {
     struct tm* timeinfo = localtime(&now);
     
     char buffer[32];
-    strftime(buffer, sizeof(buffer), "%d/%m/%Y %H:%M:%S", timeinfo);
+    strftime(buffer, sizeof(buffer), date_format_us ? "%m/%d/%Y %H:%M:%S" : "%d/%m/%Y %H:%M:%S", timeinfo);
     
     return String(buffer);
 }

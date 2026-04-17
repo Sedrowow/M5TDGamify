@@ -65,6 +65,7 @@ private:
     bool ensureProfileInIndex(const String& name, const String& description);
 
     bool parseKeyValueLine(const String& line, String& key, String& value) const;
+    bool loadProfileStats(const String& profile_name, ProfileInfo& profile) const;
 
 public:
     SaveLoadSystem();
@@ -79,13 +80,21 @@ public:
     bool setActiveProfile(const String& profile_name, const String& description);
     String getActiveProfileName() const { return active_profile_name; }
     String getActiveProfileDescription() const { return active_profile_description; }
+    bool deleteProfile(const String& profile_name, const String& fallback_name = "",
+                       const String& fallback_description = "");
 
     bool listProfiles(ProfileInfo profiles[], uint8_t max_count, uint8_t& out_count) const;
 
     bool saveCurrentProfileState(const LevelSystem& level_system, const HealthSystem& health_system,
-                                 int32_t money, int8_t timezone_offset);
+                                 int32_t money, int8_t timezone_offset,
+                                 uint32_t tasks_completed, uint32_t tasks_failed,
+                                 uint32_t tasks_created, int32_t money_gained,
+                                 int32_t money_spent);
     bool loadCurrentProfileState(LevelSystem& level_system, HealthSystem& health_system,
-                                 int32_t& money, int8_t& timezone_offset);
+                                 int32_t& money, int8_t& timezone_offset,
+                                 uint32_t& tasks_completed, uint32_t& tasks_failed,
+                                 uint32_t& tasks_created, int32_t& money_gained,
+                                 int32_t& money_spent);
 
     bool saveSharedShopItems(const String& shop_items_text);
     bool loadSharedShopItems(String& shop_items_text) const;

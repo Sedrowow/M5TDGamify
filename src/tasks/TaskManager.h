@@ -21,7 +21,7 @@ public:
      */
     uint16_t addTask(const char* name, const char* details, uint8_t difficulty,
                      uint8_t urgency, uint8_t fear, uint8_t repetition,
-                     uint16_t duration_minutes, uint32_t due_date, uint32_t reward_money,
+                     uint32_t duration_seconds, uint32_t due_date, uint32_t reward_money,
                      uint16_t linked_skill_category_id = 0, uint16_t linked_skill_id = 0,
                      uint16_t reward_item_id = 0, uint8_t reward_item_quantity = 0);
 
@@ -40,6 +40,17 @@ public:
     uint32_t completeTask(uint16_t task_id);
 
     /**
+     * Mark task as failed
+     * @return true if state changed, false otherwise
+     */
+    bool failTask(uint16_t task_id);
+
+    /**
+     * Archive a terminal task so it no longer appears in normal UI
+     */
+    bool archiveTask(uint16_t task_id);
+
+    /**
      * Get task by ID
      * @return pointer to task if found, nullptr otherwise
      */
@@ -50,6 +61,9 @@ public:
      * @return raw array of tasks and count
      */
     Task* getAllTasks(uint16_t& count) const;
+
+    Task* getVisibleTaskByIndex(uint16_t index) const;
+    uint16_t getVisibleTaskCount() const;
 
     /**
      * Get only active tasks

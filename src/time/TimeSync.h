@@ -18,6 +18,8 @@
 class TimeSync {
 private:
     int8_t timezone_offset;     // UTC offset in hours (-12 to +14)
+    bool daylight_saving;       // Add +1h when enabled
+    bool date_format_us;        // true MM/DD/YYYY, false DD/MM/YYYY
     time_t last_sync_time;      // When time was last synced
     bool wifi_connected;        // WiFi connection status
 
@@ -39,6 +41,10 @@ public:
      * - UTC-5:     offset = -5
      */
     void setTimezoneOffset(int8_t offset);
+    void setDaylightSavingEnabled(bool enabled);
+    bool isDaylightSavingEnabled() const { return daylight_saving; }
+    void setDateFormatUS(bool enabled);
+    bool isDateFormatUS() const { return date_format_us; }
 
     /**
      * Get current timezone offset

@@ -22,6 +22,8 @@ struct WiFiNetwork {
 // Settings that are persisted globally (not per-profile)
 struct GlobalSettings {
     int8_t timezone_offset;    // UTC offset in hours
+    bool timezone_dst;         // +1h daylight saving
+    bool date_format_us;       // true: MM/DD/YYYY, false: DD/MM/YYYY
     char wifi_ssid[MAX_SSID_LEN];
     char wifi_password[MAX_PASSWORD_LEN];
     bool health_time_based;
@@ -61,6 +63,7 @@ private:
     WiFiNetwork _networks[MAX_WIFI_NETWORKS];
     uint8_t scanned_count;
     GlobalSettings _settings;
+    char _connected_ssid[MAX_SSID_LEN];
 };
 
 #endif // SETTINGSSYSTEM_H
