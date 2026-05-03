@@ -50,11 +50,11 @@ jobs:
         run: platformio run --environment m5stack-cardputer
 
       - name: Copy firmware to BUILD bins
+        id: copy_bin
         run: |
           BIN_NAME="M5TDGamify ${{ steps.version.outputs.version }}.bin"
           cp .pio/build/m5stack-cardputer/firmware.bin "BUILD bins/${BIN_NAME}"
           echo "bin_name=${BIN_NAME}" >> "$GITHUB_OUTPUT"
-        id: copy_bin
 
       - name: Commit firmware binary
         if: github.event_name != 'pull_request'
