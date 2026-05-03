@@ -156,6 +156,7 @@ static const uint8_t SHOP_NUM_BUY_LIMIT      = 1;
 static const uint8_t SHOP_NUM_COOLDOWN       = 2;
 static const uint8_t SHOP_NUM_RECIPE_IN_QTY  = 3;
 static const uint8_t SHOP_NUM_RECIPE_OUT_QTY = 4;
+static const uint8_t SHOP_NUM_EFFECT_VALUE   = 5;
 // Recipe item-picker state
 uint8_t shop_recipe_pick_slot = 0;       // 0-2 = ingredient slot, 3 = output
 uint16_t shop_recipe_pick_item_index = 0;// browse index into active items
@@ -1598,14 +1599,14 @@ void handleNavCommand(NavCommand cmd) {
     // ---- Shop overlays ----
     if (overlay_mode == OVERLAY_SHOP_FIELD_MENU) {
         // Build field count dynamically
-        uint8_t field_count = shop_edit_is_recipe ? 10 : 8;
+        uint8_t field_count = shop_edit_is_recipe ? 10 : 9;
         if (cmd == NAV_UP && shop_field_menu_index > 0) shop_field_menu_index--;
         else if (cmd == NAV_DOWN && shop_field_menu_index + 1 < field_count) shop_field_menu_index++;
         else if (cmd == NAV_SELECT) {
             uint8_t sel = shop_field_menu_index;
             overlay_mode = OVERLAY_NONE;
             if (!shop_edit_is_recipe) {
-                // Item fields: 0=Name, 1=Description, 2=Effect, 3=BasePrice, 4=BuyLimit, 5=Cooldown, 6=AddNew, 7=Remove
+                // Item fields: 0=Name, 1=Description, 2=Effect Type, 3=Effect Value, 4=BasePrice, 5=BuyLimit, 6=Cooldown, 7=AddNew, 8=Remove
                 ShopItem* it = shop_system.getItemByActiveIndex(selected_shop_item_index);
                 if (sel == 0 && it) { beginTextInput(INPUT_SHOP_ITEM_NAME, it->id); }
                 else if (sel == 1 && it) { beginTextInput(INPUT_SHOP_ITEM_DESC, it->id); }
@@ -1613,23 +1614,28 @@ void handleNavCommand(NavCommand cmd) {
                     shop_effect_pick_index = (uint8_t)it->effect_type;
                     overlay_mode = OVERLAY_SHOP_EFFECT_PICK;
                 } else if (sel == 3 && it) {
+                    shop_num_edit_value = (int32_t)it->effect_value;
+                    shop_num_edit_step_index = 2;
+                    shop_num_edit_target = SHOP_NUM_EFFECT_VALUE;
+                    overlay_mode = OVERLAY_SHOP_PRICE_EDIT;
+                } else if (sel == 4 && it) {
                     shop_num_edit_value = it->base_price;
                     shop_num_edit_step_index = 2;
                     shop_num_edit_target = SHOP_NUM_BASE_PRICE;
                     overlay_mode = OVERLAY_SHOP_PRICE_EDIT;
-                } else if (sel == 4 && it) {
+                } else if (sel == 5 && it) {
                     shop_num_edit_value = it->buy_limit;
                     shop_num_edit_step_index = 0;
                     shop_num_edit_target = SHOP_NUM_BUY_LIMIT;
                     overlay_mode = OVERLAY_SHOP_PRICE_EDIT;
-                } else if (sel == 5 && it) {
+                } else if (sel == 6 && it) {
                     shop_num_edit_value = (int32_t)it->cooldown_seconds;
                     shop_num_edit_step_index = 1;
                     shop_num_edit_target = SHOP_NUM_COOLDOWN;
                     overlay_mode = OVERLAY_SHOP_PRICE_EDIT;
-                } else if (sel == 6) {
+                } else if (sel == 7) {
                     beginTextInput(INPUT_NEW_SHOP_ITEM_NAME);
-                } else if (sel == 7 && it) {
+                } else if (sel == 8 && it) {
                     shop_confirm_is_recipe = false;
                     overlay_mode = OVERLAY_SHOP_CONFIRM_DELETE;
                     profile_delete_confirm_until = millis() + 5000;
@@ -1742,7 +1748,10 @@ void handleNavCommand(NavCommand cmd) {
         else if (cmd == NAV_LEFT && shop_num_edit_step_index > 0) shop_num_edit_step_index--;
         else if (cmd == NAV_RIGHT && shop_num_edit_step_index < 4) shop_num_edit_step_index++;
         else if (cmd == NAV_SELECT) {
-            if (shop_num_edit_target == SHOP_NUM_BASE_PRICE) {
+            if (shop_num_edit_target == SHOP_NUM_EFFECT_VALUE) {
+                ShopItem* it = shop_system.getItemByActiveIndex(selected_shop_item_index);
+                if (it) it->effect_value = (uint32_t)shop_num_edit_value;
+            } else if (shop_num_edit_target == SHOP_NUM_BASE_PRICE) {
                 ShopItem* it = shop_system.getItemByActiveIndex(selected_shop_item_index);
                 if (it) { it->base_price = shop_num_edit_value; it->current_price = shop_num_edit_value; }
             } else if (shop_num_edit_target == SHOP_NUM_BUY_LIMIT) {
@@ -2115,9 +2124,17 @@ void handleNavCommand(NavCommand cmd) {
                     const ShopItem* it = shop_system.itemsRaw() + i;
                     if (!it->active || shop_system.getInventoryQuantity(it->id) == 0) continue;
                     if (found == selected_inventory_item_index) {
+                        uint32_t xp_before = level_system.getLifetimeXP();
                         if (shop_system.useItem(it->id, level_system, millis() / 1000)) {
                             saveAllProfileData();
-                            setStatus("Item used");
+                            uint32_t xp_gained = level_system.getLifetimeXP() - xp_before;
+                            if (xp_gained > 0) {
+                                char msg[40];
+                                snprintf(msg, sizeof(msg), "Item used +%luXP", (unsigned long)xp_gained);
+                                setStatus(msg, 2000);
+                            } else {
+                                setStatus("Item used");
+                            }
                         } else {
                             setStatus("Cannot use item");
                         }
@@ -2942,10 +2959,10 @@ void renderUI() {
             ui_canvas.setCursor(24, 104);
             ui_canvas.println(",/:pane ;/.:move SPC/ENT:toggle");
         } else if (overlay_mode == OVERLAY_SHOP_FIELD_MENU) {
-            static const char* item_fields[8] = {"Name", "Description", "Effect Type", "Base Price", "Buy Limit", "Cooldown(s)", "Add New Item", "Remove Item"};
+            static const char* item_fields[9] = {"Name", "Description", "Effect Type", "Effect Value", "Base Price", "Buy Limit", "Cooldown(s)", "Add New Item", "Remove Item"};
             static const char* recipe_fields[10] = {"Add Recipe", "Remove Recipe", "Slot1 Item", "Slot1 Qty", "Slot2 Item", "Slot2 Qty", "Slot3 Item", "Slot3 Qty", "Output Item", "Output Qty"};
             const char** fields = shop_edit_is_recipe ? recipe_fields : item_fields;
-            uint8_t field_count = shop_edit_is_recipe ? 10 : 8;
+            uint8_t field_count = shop_edit_is_recipe ? 10 : 9;
             uint8_t window = 7;
             uint8_t start_idx = (shop_field_menu_index > 3) ? (uint8_t)(shop_field_menu_index - 3) : 0;
             if (start_idx + window > field_count) start_idx = field_count > window ? (uint8_t)(field_count - window) : 0;
@@ -2981,7 +2998,7 @@ void renderUI() {
             ui_canvas.println(";/.:move  ENT:select  `:back");
         } else if (overlay_mode == OVERLAY_SHOP_PRICE_EDIT) {
             static const int32_t p_steps[5] = {1, 10, 100, 1000, 10000};
-            static const char* num_labels[5] = {"Base Price", "Buy Limit", "Cooldown (s)", "Ingr. Qty", "Output Qty"};
+            static const char* num_labels[6] = {"Base Price", "Buy Limit", "Cooldown (s)", "Ingr. Qty", "Output Qty", "Effect Value"};
             ui_canvas.setCursor(24, 40);
             ui_canvas.println(num_labels[shop_num_edit_target]);
             ui_canvas.setTextColor(yellow, panel);
@@ -3247,7 +3264,7 @@ void renderUI() {
         if (shop_focus_items && it) {
             ui_canvas.printf("Item: %s\n", truncateUiText(it->name, 20).c_str());
             ui_canvas.printf("$%ld  buy_limit:%d\n", (long)it->current_price, (int)it->buy_limit);
-            ui_canvas.printf("Effect:%d  cooldown:%lus\n", (int)it->effect_type, (unsigned long)it->cooldown_seconds);
+            ui_canvas.printf("Effect:%d val:%lu\n", (int)it->effect_type, (unsigned long)it->effect_value);
             ui_canvas.printf("Desc: %s\n", truncateUiText(it->description, 22).c_str());
         } else if (!shop_focus_items && rc) {
             const ShopItem* out_it = shop_system.getItem(rc->output_item_id);

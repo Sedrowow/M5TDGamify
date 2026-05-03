@@ -751,6 +751,7 @@ bool SaveLoadSystem::loadTasks(TaskManager& task_manager) {
     }
 
     file.close();
+    task_manager.fixNextId();
     return true;
 }
 

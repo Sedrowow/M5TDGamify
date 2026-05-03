@@ -87,6 +87,12 @@ public:
     void clearAll();
 
     /**
+     * Update next_task_id to be max(existing IDs) + 1.
+     * Call this after bulk-loading tasks to prevent ID collisions.
+     */
+    void fixNextId();
+
+    /**
      * Print task info for debugging
      */
     void printTask(uint16_t task_id) const;

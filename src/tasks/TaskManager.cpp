@@ -170,6 +170,14 @@ void TaskManager::clearAll() {
     next_task_id = 1;
 }
 
+void TaskManager::fixNextId() {
+    uint16_t max_id = 0;
+    for (uint16_t i = 0; i < task_count; i++) {
+        if (tasks[i].id > max_id) max_id = tasks[i].id;
+    }
+    next_task_id = max_id + 1;
+}
+
 void TaskManager::printTask(uint16_t task_id) const {
     const Task* task = nullptr;
     for (uint16_t i = 0; i < task_count; i++) {

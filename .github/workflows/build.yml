@@ -1,0 +1,77 @@
+name: Build Firmware
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version label (e.g. 1.0). Leave blank to use tag or commit SHA.'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')_$(git rev-parse --short HEAD)"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Binary version: ${VERSION}"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build firmware
+        run: platformio run --environment m5stack-cardputer
+
+      - name: Copy firmware to BUILD bins
+        run: |
+          BIN_NAME="M5TDGamify ${{ steps.version.outputs.version }}.bin"
+          cp .pio/build/m5stack-cardputer/firmware.bin "BUILD bins/${BIN_NAME}"
+          echo "bin_name=${BIN_NAME}" >> "$GITHUB_OUTPUT"
+        id: copy_bin
+
+      - name: Commit firmware binary
+        if: github.event_name != 'pull_request'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "BUILD bins/"
+          if git diff --cached --quiet; then
+            echo "No new binary to commit."
+          else
+            git commit -m "build: add firmware binary ${{ steps.copy_bin.outputs.bin_name }}"
+            git push
+          fi
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ steps.version.outputs.version }}
+          path: "BUILD bins/${{ steps.copy_bin.outputs.bin_name }}"
+          retention-days: 30
