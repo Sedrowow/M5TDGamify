@@ -2555,9 +2555,9 @@ void handleNavCommand(NavCommand cmd) {
                     save_load_system.saveGlobalConfig(cfg);
                     setStatus(cfg.audio_feedback_enabled ? "Audio feedback ON" : "Audio feedback OFF", 1400);
                 } else if (cmd == NAV_UP) {
-                    if (cfg.audio_volume < 100) {
+                    if (cfg.audio_volume < MAX_AUDIO_VOLUME) {
                         cfg.audio_volume += 5;
-                        if (cfg.audio_volume > 100) cfg.audio_volume = 100;
+                        if (cfg.audio_volume > MAX_AUDIO_VOLUME) cfg.audio_volume = MAX_AUDIO_VOLUME;
                     }
                     save_load_system.saveGlobalConfig(cfg);
                     char buf[32]; snprintf(buf, sizeof(buf), "Volume %d%%", cfg.audio_volume);
@@ -3114,8 +3114,11 @@ void renderUI() {
             char label[8];
             if (rt->linked_item_id > 0) {
                 const ShopItem* it = shop_system.getItem(rt->linked_item_id);
-                snprintf(label, sizeof(label), it ? "%.4s" : "#%d", it ? it->name : (const char*)nullptr);
-                if (!it) snprintf(label, sizeof(label), "#%d", rt->linked_item_id);
+                if (it) {
+                    snprintf(label, sizeof(label), "%.4s", it->name);
+                } else {
+                    snprintf(label, sizeof(label), "#%d", rt->linked_item_id);
+                }
             } else if (rt->name[0]) {
                 snprintf(label, sizeof(label), "%.4s", rt->name);
             } else {

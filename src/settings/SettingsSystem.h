@@ -6,6 +6,7 @@
 
 #define MAX_WIFI_NETWORKS 16
 #define MAX_SAVED_WIFI    8
+#define MAX_AUDIO_VOLUME  100
 #ifndef MAX_SSID_LEN
 #define MAX_SSID_LEN      33
 #endif

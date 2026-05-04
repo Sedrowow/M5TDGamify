@@ -1256,7 +1256,7 @@ bool SaveLoadSystem::loadGlobalConfig(GlobalSettings& cfg) {
             } else if (key == "audio_volume") {
                 int v = value.toInt();
                 if (v < 0) v = 0;
-                if (v > 100) v = 100;
+                if (v > MAX_AUDIO_VOLUME) v = MAX_AUDIO_VOLUME;
                 cfg.audio_volume = (uint8_t)v;
             } else if (key == "skill_xp_ratio") {
                 int v = value.toInt();
