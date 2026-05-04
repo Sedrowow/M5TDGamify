@@ -1180,7 +1180,7 @@ void finishTextInput() {
                     dt_ntp.time.hours = ti_ntp.tm_hour;
                     dt_ntp.time.minutes = ti_ntp.tm_min;
                     dt_ntp.time.seconds = ti_ntp.tm_sec;
-                    M5Cardputer.Rtc.setDateTime(dt_ntp);
+                    M5.Rtc.setDateTime(dt_ntp);
                     #endif
                     setStatus("WiFi+NTP OK");
                 } else {
@@ -2372,7 +2372,7 @@ void handleNavCommand(NavCommand cmd) {
                                     m5::rtc_datetime_t dt;
                                     dt.date.year = ti.tm_year + 1900; dt.date.month = ti.tm_mon + 1; dt.date.date = ti.tm_mday;
                                     dt.time.hours = ti.tm_hour; dt.time.minutes = ti.tm_min; dt.time.seconds = ti.tm_sec;
-                                    M5Cardputer.Rtc.setDateTime(dt);
+                                    M5.Rtc.setDateTime(dt);
                                     #endif
                                     setStatus("WiFi+NTP OK");
                                 } else { setStatus("WiFi OK, NTP fail"); }
@@ -2402,7 +2402,7 @@ void handleNavCommand(NavCommand cmd) {
                                         m5::rtc_datetime_t dt2;
                                         dt2.date.year = ti2.tm_year + 1900; dt2.date.month = ti2.tm_mon + 1; dt2.date.date = ti2.tm_mday;
                                         dt2.time.hours = ti2.tm_hour; dt2.time.minutes = ti2.tm_min; dt2.time.seconds = ti2.tm_sec;
-                                        M5Cardputer.Rtc.setDateTime(dt2);
+                                        M5.Rtc.setDateTime(dt2);
                                         #endif
                                         setStatus("WiFi+NTP OK");
                                     } else { setStatus("WiFi OK, NTP fail"); }
@@ -4062,7 +4062,7 @@ void setup() {
 
         // Try to restore time from RTC first (no network needed)
         #if defined(ARDUINO)
-        auto rtc_dt = M5Cardputer.Rtc.getDateTime();
+        auto rtc_dt = M5.Rtc.getDateTime();
         if (rtc_dt.date.year >= 2024) {
             struct tm tm_rtc = {};
             tm_rtc.tm_year = rtc_dt.date.year - 1900;
@@ -4104,7 +4104,7 @@ void setup() {
                 dt_sync.time.hours = ti_sync.tm_hour;
                 dt_sync.time.minutes = ti_sync.tm_min;
                 dt_sync.time.seconds = ti_sync.tm_sec;
-                M5Cardputer.Rtc.setDateTime(dt_sync);
+                M5.Rtc.setDateTime(dt_sync);
                 #endif
             }
         }
