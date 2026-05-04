@@ -12,6 +12,7 @@
 #include "shop/ShopSystem.h"
 #include "persistence/SaveLoadSystem.h"
 #include "settings/SettingsSystem.h"
+#include "alarms/AlarmSystem.h"
 
 TaskManager task_manager;
 LevelSystem level_system;
@@ -45,7 +46,8 @@ enum UiScreen {
     UI_INVENTORY = 5,
     UI_SAVE_LOAD = 6,
     UI_SETTINGS = 7,
-    UI_HELP = 8
+    UI_HELP = 8,
+    UI_ALARMS = 9
 };
 
 enum TextInputPurpose {
@@ -64,7 +66,9 @@ enum TextInputPurpose {
     INPUT_SHOP_ITEM_DESC = 12,
     INPUT_RENAME_CATEGORY = 13,
     INPUT_RENAME_SKILL = 14,
-    INPUT_EDIT_SKILL_DETAILS = 15
+    INPUT_EDIT_SKILL_DETAILS = 15,
+    INPUT_ALARM_NAME = 16,
+    INPUT_TIMER_NAME = 17
 };
 
 enum NavCommand {
@@ -139,7 +143,11 @@ bool skill_edit_mode = false;           // E toggles skill edit mode
 bool skill_edit_is_category = false;    // true = editing category, false = editing skill
 uint8_t skill_field_menu_index = 0;     // highlighted entry in skill field picker
 bool skill_delete_is_category = false;  // whether the pending delete is a category
-bool skill_spider_show_category = false;// false=category-avg chart, true=skills-in-cat chart
+// Spider chart mode: 0=cat-level, 1=cat-totalXP, 2=skill-level, 3=skill-totalXP
+uint8_t skill_spider_mode = 0;
+
+// Help overlay (H key toggles per-screen help)
+bool help_overlay_active = false;
 
 bool shop_edit_mode = false;            // E toggles item/recipe edit mode
 bool shop_edit_is_recipe = false;       // whether editing a recipe (vs item)
@@ -190,11 +198,14 @@ enum SettingsSection {
     SETT_HEALTH = 3,
     SETT_RAND_TASK = 4,
     SETT_FEEDBACK = 5,
-    SETT_SECTION_COUNT = 6
+    SETT_SKILL_XP = 6,
+    SETT_SECTION_COUNT = 7
 };
 SettingsSection sett_section = SETT_WIFI;
 uint8_t sett_wifi_sel = 0;         // selected scanned network index
 bool sett_wifi_scanning = false;
+bool sett_wifi_focus_saved = false; // false=scanned list, true=saved list
+uint8_t sett_wifi_saved_sel = 0;   // selected saved credential index
 
 // Manual time editor fields: H M S d m Y
 uint8_t sett_time_vals[6] = {9, 0, 0, 16, 4, 26};  // hh mm ss dd MM yy(2-digit)
@@ -222,9 +233,24 @@ uint32_t control_scroll_last_update = 0;
 // Screen selector state
 bool screen_selector_active = false;
 uint8_t screen_selector_index = 0;  // 0=DASH, 1=TASKS, 2=SKILLS, etc
-const uint8_t SCREEN_SELECTOR_COUNT = 9;  // DASH, TASKS, SKILLS, SHOP, PROF, INV, SAVE, SETTINGS, HELP
+const uint8_t SCREEN_SELECTOR_COUNT = 10;  // DASH, TASKS, SKILLS, SHOP, PROF, INV, SAVE, SETTINGS, HELP, ALARMS
 bool screen_selector_sub_active = false;
 uint8_t screen_selector_sub_index = 0;
+
+// Alarm & timer system
+AlarmEntry alarm_entries[MAX_ALARMS];
+uint8_t alarm_count = 0;
+TimerEntry timer_entries[MAX_TIMERS];
+uint8_t timer_count = 0;
+// UI state for alarms screen
+bool alarm_focus_timers = false;   // false=alarm pane, true=timer pane
+uint8_t alarm_sel_index = 0;
+uint8_t timer_sel_index = 0;
+// Pending add state
+uint8_t alarm_add_hour = 7;
+uint8_t alarm_add_minute = 0;
+uint32_t alarm_add_duration_seconds = 60;   // default timer: 1 minute
+uint8_t alarm_edit_index = 0xFF;            // 0xFF = adding new, else editing existing
 
 // Screensaver state
 bool screensaver_active = false;
@@ -308,7 +334,9 @@ void triggerFeedback(FeedbackEvent ev) {
             dur = 120;
         }
 
-        M5Cardputer.Speaker.setVolume(cfg.audio_volume);
+        // Map volume 0-100 to 0-255 for speaker
+        uint8_t spk_vol = (uint8_t)((uint16_t)cfg.audio_volume * 255 / 100);
+        M5Cardputer.Speaker.setVolume(spk_vol);
         M5Cardputer.Speaker.tone(freq, dur);
     }
 }
@@ -316,7 +344,8 @@ void triggerFeedback(FeedbackEvent ev) {
 void playHealthBarBuzz() {
     const GlobalSettings& cfg = settings_system.settings();
     if (!cfg.audio_feedback_enabled) return;
-    M5Cardputer.Speaker.setVolume(cfg.audio_volume);
+    uint8_t spk_vol = (uint8_t)((uint16_t)cfg.audio_volume * 255 / 100);
+    M5Cardputer.Speaker.setVolume(spk_vol);
     // Low triangle-like buzz: up then down.
     M5Cardputer.Speaker.tone(170, 28);
     M5Cardputer.Speaker.tone(220, 24);
@@ -326,7 +355,8 @@ void playHealthBarBuzz() {
 void playXPBarBuzz() {
     const GlobalSettings& cfg = settings_system.settings();
     if (!cfg.audio_feedback_enabled) return;
-    M5Cardputer.Speaker.setVolume(cfg.audio_volume);
+    uint8_t spk_vol = (uint8_t)((uint16_t)cfg.audio_volume * 255 / 100);
+    M5Cardputer.Speaker.setVolume(spk_vol);
     // Saw-like buzz: rising steps.
     M5Cardputer.Speaker.tone(380, 20);
     M5Cardputer.Speaker.tone(520, 20);
@@ -336,7 +366,8 @@ void playXPBarBuzz() {
 void playLevelUpBuzz(uint16_t duration_ms) {
     const GlobalSettings& cfg = settings_system.settings();
     if (!cfg.audio_feedback_enabled) return;
-    M5Cardputer.Speaker.setVolume(cfg.audio_volume);
+    uint8_t spk_vol = (uint8_t)((uint16_t)cfg.audio_volume * 255 / 100);
+    M5Cardputer.Speaker.setVolume(spk_vol);
     M5Cardputer.Speaker.tone(1700, duration_ms);
 }
 
@@ -611,14 +642,110 @@ void drawSkillsSpiderChartCategory(int cx, int cy, int radius, uint16_t category
     }
 }
 
+// Spider chart comparing total lifetime XP across categories.
+void drawSpiderCategoryTotalXP(int cx, int cy, int radius) {
+    char names[8][MAX_SKILL_CATEGORY_NAME_LEN];
+    float values[8];
+    uint16_t axes = (uint16_t)skill_system.exportCategoryTotalXP(names, values, 8);
+    if (axes < 3) {
+        ui_canvas.drawCircle(cx, cy, radius, 0x6B4D);
+        ui_canvas.setTextColor(0xBDF7, 0x2124);
+        ui_canvas.setCursor(cx - 28, cy - 4);
+        ui_canvas.print("Need 3+ cats");
+        return;
+    }
+    uint8_t ax = axes > 8 ? 8 : (uint8_t)axes;
+    const float step  = (2.0f * PI) / (float)ax;
+    const float start = -PI / 2.0f;
+    const uint16_t grid_col = 0x6B4D;
+    const uint16_t spoke_col = 0x94B2;
+    const uint16_t data_col  = 0x07FF;  // cyan — distinct
+    for (uint8_t ring = 1; ring <= 4; ring++) {
+        int rr = (radius * ring) / 4;
+        int prev_x = 0, prev_y = 0;
+        for (uint8_t i = 0; i <= ax; i++) {
+            uint8_t a = (i == ax) ? 0 : i;
+            float ang = start + step * a;
+            int px = cx + (int)(cosf(ang) * rr);
+            int py = cy + (int)(sinf(ang) * rr);
+            if (i > 0) ui_canvas.drawLine(prev_x, prev_y, px, py, grid_col);
+            prev_x = px; prev_y = py;
+        }
+    }
+    for (uint8_t i = 0; i < ax; i++) {
+        float ang = start + step * i;
+        ui_canvas.drawLine(cx, cy, cx + (int)(cosf(ang) * radius), cy + (int)(sinf(ang) * radius), spoke_col);
+    }
+    int data_x[8], data_y[8];
+    for (uint8_t i = 0; i < ax; i++) {
+        float rr = radius * (values[i] / 100.0f);
+        float ang = start + step * i;
+        data_x[i] = cx + (int)(cosf(ang) * rr);
+        data_y[i] = cy + (int)(sinf(ang) * rr);
+    }
+    for (uint8_t i = 0; i < ax; i++) {
+        uint8_t n = (i + 1) % ax;
+        ui_canvas.drawLine(data_x[i], data_y[i], data_x[n], data_y[n], data_col);
+        ui_canvas.fillCircle(data_x[i], data_y[i], 2, data_col);
+    }
+}
+
+// Spider chart comparing total lifetime XP for skills in a category.
+void drawSpiderSkillsTotalXP(int cx, int cy, int radius, uint16_t category_id) {
+    char names[8][MAX_SKILL_NAME_LEN];
+    float values[8];
+    uint16_t axes = (uint16_t)skill_system.exportSkillsInCategoryTotalXP(category_id, names, values, 8);
+    if (axes < 3) {
+        ui_canvas.drawCircle(cx, cy, radius, 0x6B4D);
+        ui_canvas.setTextColor(0xBDF7, 0x2124);
+        ui_canvas.setCursor(cx - 28, cy - 4);
+        ui_canvas.print("Need 3+ skills");
+        return;
+    }
+    uint8_t ax = axes > 8 ? 8 : (uint8_t)axes;
+    const float step  = (2.0f * PI) / (float)ax;
+    const float start = -PI / 2.0f;
+    const uint16_t grid_col = 0x6B4D;
+    const uint16_t spoke_col = 0x94B2;
+    const uint16_t data_col  = 0xF81F;  // magenta — distinct
+    for (uint8_t ring = 1; ring <= 4; ring++) {
+        int rr = (radius * ring) / 4;
+        int prev_x = 0, prev_y = 0;
+        for (uint8_t i = 0; i <= ax; i++) {
+            uint8_t a = (i == ax) ? 0 : i;
+            float ang = start + step * a;
+            int px = cx + (int)(cosf(ang) * rr);
+            int py = cy + (int)(sinf(ang) * rr);
+            if (i > 0) ui_canvas.drawLine(prev_x, prev_y, px, py, grid_col);
+            prev_x = px; prev_y = py;
+        }
+    }
+    for (uint8_t i = 0; i < ax; i++) {
+        float ang = start + step * i;
+        ui_canvas.drawLine(cx, cy, cx + (int)(cosf(ang) * radius), cy + (int)(sinf(ang) * radius), spoke_col);
+    }
+    int data_x[8], data_y[8];
+    for (uint8_t i = 0; i < ax; i++) {
+        float rr = radius * (values[i] / 100.0f);
+        float ang = start + step * i;
+        data_x[i] = cx + (int)(cosf(ang) * rr);
+        data_y[i] = cy + (int)(sinf(ang) * rr);
+    }
+    for (uint8_t i = 0; i < ax; i++) {
+        uint8_t n = (i + 1) % ax;
+        ui_canvas.drawLine(data_x[i], data_y[i], data_x[n], data_y[n], data_col);
+        ui_canvas.fillCircle(data_x[i], data_y[i], 2, data_col);
+    }
+}
+
 UiScreen indexToScreen(uint8_t idx) {
-    static const UiScreen screens[] = {UI_DASHBOARD, UI_TASKS, UI_SKILLS, UI_SHOP, UI_PROFILES, UI_INVENTORY, UI_SAVE_LOAD, UI_SETTINGS, UI_HELP};
+    static const UiScreen screens[] = {UI_DASHBOARD, UI_TASKS, UI_SKILLS, UI_SHOP, UI_PROFILES, UI_INVENTORY, UI_SAVE_LOAD, UI_SETTINGS, UI_HELP, UI_ALARMS};
     if (idx < SCREEN_SELECTOR_COUNT) return screens[idx];
     return UI_DASHBOARD;
 }
 
 uint8_t screenToIndex(UiScreen screen) {
-    static const UiScreen screens[] = {UI_DASHBOARD, UI_TASKS, UI_SKILLS, UI_SHOP, UI_PROFILES, UI_INVENTORY, UI_SAVE_LOAD, UI_SETTINGS, UI_HELP};
+    static const UiScreen screens[] = {UI_DASHBOARD, UI_TASKS, UI_SKILLS, UI_SHOP, UI_PROFILES, UI_INVENTORY, UI_SAVE_LOAD, UI_SETTINGS, UI_HELP, UI_ALARMS};
     for (uint8_t i = 0; i < SCREEN_SELECTOR_COUNT; i++) {
         if (screens[i] == screen) return i;
     }
@@ -626,16 +753,16 @@ uint8_t screenToIndex(UiScreen screen) {
 }
 
 const char* indexToScreenName(uint8_t idx) {
-    static const char* names[] = {"DASH", "TASKS", "SKILLS", "SHOP", "PROF", "INV", "SAVE", "SETTINGS", "HELP"};
+    static const char* names[] = {"DASH", "TASKS", "SKILLS", "SHOP", "PROF", "INV", "SAVE", "SETTINGS", "HELP", "ALARMS"};
     if (idx < SCREEN_SELECTOR_COUNT) return names[idx];
     return "DASH";
 }
 
-static const char* sett_sub_names[6] = {"WiFi", "Timezone", "Time", "Health", "Rand Task", "Feedback"};
+static const char* sett_sub_names[7] = {"WiFi", "Timezone", "Time", "Health", "Rand Task", "Feedback", "Skill XP"};
 
 uint8_t getSelectorSubCount(uint8_t screen_idx) {
     if (screen_idx == 2) return (uint8_t)skill_system.getActiveCategoryCount(); // SKILLS
-    if (screen_idx == 7) return 6; // SETTINGS
+    if (screen_idx == 7) return 7; // SETTINGS
     return 0;
 }
 
@@ -644,7 +771,7 @@ const char* getSelectorSubName(uint8_t screen_idx, uint8_t sub_idx) {
         const SkillCategory* cat = skill_system.getCategoryByActiveIndex(sub_idx);
         return cat ? cat->name : "?";
     }
-    if (screen_idx == 7 && sub_idx < 6) return sett_sub_names[sub_idx];
+    if (screen_idx == 7 && sub_idx < 7) return sett_sub_names[sub_idx];
     return "?";
 }
 
@@ -1039,10 +1166,22 @@ void finishTextInput() {
         if (net) {
             setStatus("Connecting...", 8000);
             if (settings_system.connectWiFi(net->ssid, text_input_buffer, 8000)) {
-                settings_system.setStoredCredentials(net->ssid, text_input_buffer);
                 save_load_system.saveGlobalConfig(settings_system.settings());
-                // Already connected above; avoid reconnect loop in TimeSync.
                 if (time_sync.syncWithWiFi(net->ssid, text_input_buffer, 5000)) {
+                    // Save time to RTC after successful NTP sync
+                    #if defined(ARDUINO)
+                    time_t now_ntp = time_sync.getCurrentTime();
+                    struct tm ti_ntp;
+                    localtime_r(&now_ntp, &ti_ntp);
+                    m5::rtc_datetime_t dt_ntp;
+                    dt_ntp.date.year = ti_ntp.tm_year + 1900;
+                    dt_ntp.date.month = ti_ntp.tm_mon + 1;
+                    dt_ntp.date.date = ti_ntp.tm_mday;
+                    dt_ntp.time.hours = ti_ntp.tm_hour;
+                    dt_ntp.time.minutes = ti_ntp.tm_min;
+                    dt_ntp.time.seconds = ti_ntp.tm_sec;
+                    M5Cardputer.Rtc.setDateTime(dt_ntp);
+                    #endif
                     setStatus("WiFi+NTP OK");
                 } else {
                     setStatus("WiFi OK, NTP fail");
@@ -1050,6 +1189,23 @@ void finishTextInput() {
             } else {
                 setStatus("WiFi connect failed");
             }
+        }
+    } else if (input_purpose == INPUT_ALARM_NAME) {
+        // pending_task_id holds alarm slot index
+        uint8_t idx = (uint8_t)pending_task_id;
+        if (idx < alarm_count) {
+            strncpy(alarm_entries[idx].name, text_input_buffer, ALARM_NAME_LEN - 1);
+            alarm_entries[idx].name[ALARM_NAME_LEN - 1] = '\0';
+            save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
+            setStatus("Alarm saved");
+        }
+    } else if (input_purpose == INPUT_TIMER_NAME) {
+        uint8_t idx = (uint8_t)pending_task_id;
+        if (idx < timer_count) {
+            strncpy(timer_entries[idx].name, text_input_buffer, ALARM_NAME_LEN - 1);
+            timer_entries[idx].name[ALARM_NAME_LEN - 1] = '\0';
+            save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
+            setStatus("Timer saved");
         }
     } else if (input_purpose == INPUT_MANUAL_TIME) {
         // time_input_buffer holds "HH:MM:SS DD/MM/YY" — already applied via sett_time_vals
@@ -1407,9 +1563,18 @@ void completeTaskAtIndex(uint16_t task_index) {
     uint32_t skill_xp = 0;
     uint16_t skill_levels = 0;
     if (t->linked_skill_count > 0) {
+        const GlobalSettings& gcfg = settings_system.settings();
+        uint8_t ratio = gcfg.skill_xp_ratio;
+        bool split = gcfg.skill_xp_split;
+        // Compute per-skill XP based on ratio and optional split
+        uint32_t per_skill_xp = (player_xp * ratio) / 100;
+        if (split && t->linked_skill_count > 1) {
+            per_skill_xp /= t->linked_skill_count;
+        }
         for (uint8_t i = 0; i < t->linked_skill_count; i++) {
             uint32_t granted_xp = 0;
-            skill_levels += skill_system.addXPFromTask(t->linked_skill_ids[i], player_xp, granted_xp);
+            // Use the ratio-adjusted XP instead of the default multiplier
+            skill_levels += skill_system.addXPFromTask(t->linked_skill_ids[i], per_skill_xp, granted_xp, 1.0f);
             skill_xp += granted_xp;
         }
     }
@@ -1476,8 +1641,8 @@ void failTaskAtIndex(uint16_t task_index) {
 
 void cycleScreen(int8_t delta) {
     int8_t next = (int8_t)current_screen + delta;
-    if (next < 0) next = UI_HELP;
-    if (next > UI_HELP) next = UI_DASHBOARD;
+    if (next < 0) next = UI_ALARMS;
+    if (next > UI_ALARMS) next = UI_DASHBOARD;
     current_screen = (UiScreen)next;
 
     const char* name = "DASH";
@@ -1488,6 +1653,7 @@ void cycleScreen(int8_t delta) {
     else if (current_screen == UI_SAVE_LOAD) name = "SAVE";
     else if (current_screen == UI_SETTINGS) name = "SETTINGS";
     else if (current_screen == UI_HELP) name = "HELP";
+    else if (current_screen == UI_ALARMS) name = "ALARMS";
 
     setStatus(name, 1000);
 }
@@ -1785,25 +1951,29 @@ void handleNavCommand(NavCommand cmd) {
             if (picked) {
                 CraftRecipe* rc = shop_system.getRecipeByActiveIndex(selected_shop_recipe_index);
                 if (rc) {
+                    // Always allow selection; check for conflict after setting
                     if (shop_recipe_pick_slot == 3) {
-                        // output — cannot be the same as any ingredient
-                        bool any_conflict = false;
-                        for (uint8_t s = 0; s < rc->input_count; s++)
-                            if (rc->inputs[s].item_id == picked->id) any_conflict = true;
-                        if (any_conflict) { setStatus("Output cannot match input"); }
-                        else { rc->output_item_id = picked->id; saveShopData(); setStatus("Output item set"); }
+                        rc->output_item_id = picked->id;
                     } else {
-                        // ingredient — cannot be the same as the output item
-                        if (picked->id == rc->output_item_id) { setStatus("Input cannot match output"); }
-                        else {
-                            rc->inputs[shop_recipe_pick_slot].item_id = picked->id;
-                            if (rc->inputs[shop_recipe_pick_slot].quantity == 0)
-                                rc->inputs[shop_recipe_pick_slot].quantity = 1;
-                            if (shop_recipe_pick_slot + 1 > rc->input_count)
-                                rc->input_count = shop_recipe_pick_slot + 1;
-                            saveShopData();
-                            setStatus("Ingredient set");
+                        rc->inputs[shop_recipe_pick_slot].item_id = picked->id;
+                        if (rc->inputs[shop_recipe_pick_slot].quantity == 0)
+                            rc->inputs[shop_recipe_pick_slot].quantity = 1;
+                        if (shop_recipe_pick_slot + 1 > rc->input_count)
+                            rc->input_count = shop_recipe_pick_slot + 1;
+                    }
+                    // Check for conflict: any input matches output
+                    bool conflict = false;
+                    if (rc->output_item_id != 0) {
+                        for (uint8_t s = 0; s < rc->input_count; s++) {
+                            if (rc->inputs[s].item_id == rc->output_item_id) { conflict = true; break; }
                         }
+                    }
+                    if (conflict) {
+                        setStatus("Conflict: input=output (fix before saving)", 2000);
+                        // Do not save while conflict exists
+                    } else {
+                        saveShopData();
+                        setStatus(shop_recipe_pick_slot == 3 ? "Output item set" : "Ingredient set");
                     }
                 }
             }
@@ -2169,57 +2339,100 @@ void handleNavCommand(NavCommand cmd) {
             break;
 
         case UI_SETTINGS: {
-            // Section switch: Left/Right
-            if (cmd == NAV_LEFT) {
+            // WiFi section handles LEFT/RIGHT for its own focus toggle vs section nav
+            if (sett_section == SETT_WIFI && (cmd == NAV_LEFT || cmd == NAV_UP || cmd == NAV_DOWN || cmd == NAV_SELECT || cmd == NAV_BACK)) {
+                if (cmd == NAV_LEFT) {
+                    sett_wifi_focus_saved = !sett_wifi_focus_saved;
+                    sett_wifi_saved_sel = 0;
+                    sett_wifi_sel = 0;
+                } else if (cmd == NAV_UP) {
+                    if (sett_wifi_focus_saved) {
+                        if (sett_wifi_saved_sel > 0) sett_wifi_saved_sel--;
+                    } else {
+                        if (sett_wifi_sel > 0) sett_wifi_sel--;
+                    }
+                } else if (cmd == NAV_DOWN) {
+                    if (sett_wifi_focus_saved) {
+                        uint8_t cnt = settings_system.getSavedWiFiCount();
+                        if (sett_wifi_saved_sel + 1 < cnt) sett_wifi_saved_sel++;
+                    } else {
+                        if (sett_wifi_sel + 1 < settings_system.getScannedCount()) sett_wifi_sel++;
+                    }
+                } else if (cmd == NAV_SELECT) {
+                    if (sett_wifi_focus_saved) {
+                        const SavedWiFiCred* cred = settings_system.getSavedWiFi(sett_wifi_saved_sel);
+                        if (cred) {
+                            setStatus("Connecting...", 8000);
+                            if (settings_system.connectWiFi(cred->ssid, cred->password, 8000)) {
+                                save_load_system.saveGlobalConfig(settings_system.settings());
+                                if (time_sync.syncWithWiFi(cred->ssid, cred->password, 5000)) {
+                                    #if defined(ARDUINO)
+                                    time_t now = time_sync.getCurrentTime();
+                                    struct tm ti; localtime_r(&now, &ti);
+                                    m5::rtc_datetime_t dt;
+                                    dt.date.year = ti.tm_year + 1900; dt.date.month = ti.tm_mon + 1; dt.date.date = ti.tm_mday;
+                                    dt.time.hours = ti.tm_hour; dt.time.minutes = ti.tm_min; dt.time.seconds = ti.tm_sec;
+                                    M5Cardputer.Rtc.setDateTime(dt);
+                                    #endif
+                                    setStatus("WiFi+NTP OK");
+                                } else { setStatus("WiFi OK, NTP fail"); }
+                            } else { setStatus("WiFi failed"); }
+                        }
+                    } else {
+                        const WiFiNetwork* net = settings_system.getScannedNetwork(sett_wifi_sel);
+                        if (net) {
+                            if (net->has_password) {
+                                text_input_len = 0; text_input_buffer[0] = '\0';
+                                for (uint8_t i = 0; i < settings_system.getSavedWiFiCount(); i++) {
+                                    const SavedWiFiCred* c = settings_system.getSavedWiFi(i);
+                                    if (c && strcmp(c->ssid, net->ssid) == 0 && c->password[0] != '\0') {
+                                        strncpy(text_input_buffer, c->password, sizeof(text_input_buffer) - 1);
+                                        text_input_len = strlen(text_input_buffer); break;
+                                    }
+                                }
+                                beginTextInput(INPUT_WIFI_PASSWORD, sett_wifi_sel);
+                            } else {
+                                setStatus("Connecting...", 8000);
+                                if (settings_system.connectWiFi(net->ssid, "", 8000)) {
+                                    save_load_system.saveGlobalConfig(settings_system.settings());
+                                    if (time_sync.syncWithWiFi(net->ssid, "", 5000)) {
+                                        #if defined(ARDUINO)
+                                        time_t now2 = time_sync.getCurrentTime();
+                                        struct tm ti2; localtime_r(&now2, &ti2);
+                                        m5::rtc_datetime_t dt2;
+                                        dt2.date.year = ti2.tm_year + 1900; dt2.date.month = ti2.tm_mon + 1; dt2.date.date = ti2.tm_mday;
+                                        dt2.time.hours = ti2.tm_hour; dt2.time.minutes = ti2.tm_min; dt2.time.seconds = ti2.tm_sec;
+                                        M5Cardputer.Rtc.setDateTime(dt2);
+                                        #endif
+                                        setStatus("WiFi+NTP OK");
+                                    } else { setStatus("WiFi OK, NTP fail"); }
+                                } else { setStatus("WiFi failed"); }
+                            }
+                        }
+                    }
+                } else if (cmd == NAV_BACK) {
+                    if (sett_wifi_focus_saved) {
+                        if (settings_system.removeSavedWiFi(sett_wifi_saved_sel)) {
+                            save_load_system.saveGlobalConfig(settings_system.settings());
+                            if (sett_wifi_saved_sel > 0 && sett_wifi_saved_sel >= settings_system.getSavedWiFiCount())
+                                sett_wifi_saved_sel--;
+                            setStatus("Saved WiFi removed", 1500);
+                        }
+                    } else {
+                        setStatus("Scanning WiFi...", 3000);
+                        settings_system.scanNetworks();
+                        sett_wifi_sel = 0;
+                        char buf[48]; snprintf(buf, sizeof(buf), "Found %d networks", settings_system.getScannedCount());
+                        setStatus(buf, 2500);
+                    }
+                }
+            } else if (cmd == NAV_LEFT) {
+                // Section switch left
                 int s = (int)sett_section - 1;
                 if (s >= 0) sett_section = (SettingsSection)s;
             } else if (cmd == NAV_RIGHT) {
                 int s = (int)sett_section + 1;
                 if (s < SETT_SECTION_COUNT) sett_section = (SettingsSection)s;
-            } else if (sett_section == SETT_WIFI) {
-                if (cmd == NAV_UP && sett_wifi_sel > 0) sett_wifi_sel--;
-                else if (cmd == NAV_DOWN && sett_wifi_sel + 1 < settings_system.getScannedCount()) sett_wifi_sel++;
-                else if (cmd == NAV_SELECT) {
-                    // Connect to selected network
-                    const WiFiNetwork* net = settings_system.getScannedNetwork(sett_wifi_sel);
-                    if (net) {
-                        if (net->has_password) {
-                            text_input_len = 0;
-                            text_input_buffer[0] = '\0';
-                            // pre-fill with stored password if ssid matches
-                            char stored_ssid[MAX_SSID_LEN];
-                            char stored_pass[MAX_PASSWORD_LEN];
-                            settings_system.getStoredCredentials(stored_ssid, stored_pass);
-                            if (strcmp(stored_ssid, net->ssid) == 0 && stored_pass[0] != '\0') {
-                                strncpy(text_input_buffer, stored_pass, sizeof(text_input_buffer) - 1);
-                                text_input_len = strlen(text_input_buffer);
-                            }
-                            beginTextInput(INPUT_WIFI_PASSWORD, sett_wifi_sel);
-                        } else {
-                            setStatus("Connecting...", 8000);
-                            if (settings_system.connectWiFi(net->ssid, "", 8000)) {
-                                settings_system.setStoredCredentials(net->ssid, "");
-                                save_load_system.saveGlobalConfig(settings_system.settings());
-                                // Already connected above; avoid reconnect loop in TimeSync.
-                                if (time_sync.syncWithWiFi(net->ssid, "", 5000)) {
-                                    setStatus("WiFi+NTP OK");
-                                } else {
-                                    setStatus("WiFi OK, NTP fail");
-                                }
-                            } else {
-                                setStatus("WiFi failed");
-                            }
-                        }
-                    }
-                } else if (cmd == NAV_BACK) {
-                    // Trigger scan
-                    setStatus("Scanning WiFi...", 3000);
-                    settings_system.scanNetworks();
-                    sett_wifi_sel = 0;
-                    char buf[48];
-                    snprintf(buf, sizeof(buf), "Found %d networks", settings_system.getScannedCount());
-                    setStatus(buf, 2500);
-                }
             } else if (sett_section == SETT_TIMEZONE) {
                 GlobalSettings& cfg = settings_system.settings();
                 if (cmd == NAV_UP) {
@@ -2242,12 +2455,22 @@ void handleNavCommand(NavCommand cmd) {
                     save_load_system.saveGlobalConfig(cfg);
                     setStatus(cfg.date_format_us ? "Date MM/DD" : "Date DD/MM", 1200);
                 } else if (cmd == NAV_SELECT) {
-                    // Re-sync NTP with stored credentials
-                    char ssid[MAX_SSID_LEN], pass[MAX_PASSWORD_LEN];
-                    settings_system.getStoredCredentials(ssid, pass);
-                    if (ssid[0] != '\0') {
+                    // Re-sync NTP using currently connected WiFi or first saved credential
+                    const char* ssid_s = settings_system.isWiFiConnected() ?
+                        settings_system.getConnectedSSID() : nullptr;
+                    const char* pass_s = "";
+                    if (ssid_s) {
+                        for (uint8_t i = 0; i < settings_system.getSavedWiFiCount(); i++) {
+                            const SavedWiFiCred* c = settings_system.getSavedWiFi(i);
+                            if (c && strcmp(c->ssid, ssid_s) == 0) { pass_s = c->password; break; }
+                        }
+                    } else if (settings_system.getSavedWiFiCount() > 0) {
+                        const SavedWiFiCred* c = settings_system.getSavedWiFi(0);
+                        if (c) { ssid_s = c->ssid; pass_s = c->password; }
+                    }
+                    if (ssid_s && ssid_s[0] != '\0') {
                         setStatus("NTP sync...", 6000);
-                        if (time_sync.syncWithWiFi(ssid, pass)) {
+                        if (time_sync.syncWithWiFi(ssid_s, pass_s)) {
                             setStatus("NTP sync OK");
                         } else {
                             setStatus("NTP sync failed");
@@ -2332,15 +2555,38 @@ void handleNavCommand(NavCommand cmd) {
                     save_load_system.saveGlobalConfig(cfg);
                     setStatus(cfg.audio_feedback_enabled ? "Audio feedback ON" : "Audio feedback OFF", 1400);
                 } else if (cmd == NAV_UP) {
-                    if (cfg.audio_volume < 245) cfg.audio_volume += 10;
-                    else cfg.audio_volume = 255;
+                    if (cfg.audio_volume < MAX_AUDIO_VOLUME) {
+                        cfg.audio_volume += 5;
+                        if (cfg.audio_volume > MAX_AUDIO_VOLUME) cfg.audio_volume = MAX_AUDIO_VOLUME;
+                    }
                     save_load_system.saveGlobalConfig(cfg);
-                    setStatus("Volume up", 900);
+                    char buf[32]; snprintf(buf, sizeof(buf), "Volume %d%%", cfg.audio_volume);
+                    setStatus(buf, 900);
                 } else if (cmd == NAV_DOWN) {
-                    if (cfg.audio_volume > 10) cfg.audio_volume -= 10;
+                    if (cfg.audio_volume > 5) cfg.audio_volume -= 5;
                     else cfg.audio_volume = 0;
                     save_load_system.saveGlobalConfig(cfg);
-                    setStatus("Volume down", 900);
+                    char buf[32]; snprintf(buf, sizeof(buf), "Volume %d%%", cfg.audio_volume);
+                    setStatus(buf, 900);
+                }
+            } else if (sett_section == SETT_SKILL_XP) {
+                GlobalSettings& cfg = settings_system.settings();
+                if (cmd == NAV_UP) {
+                    if (cfg.skill_xp_ratio < 100) cfg.skill_xp_ratio += 5;
+                    if (cfg.skill_xp_ratio > 100) cfg.skill_xp_ratio = 100;
+                    save_load_system.saveGlobalConfig(cfg);
+                    char buf[40]; snprintf(buf, sizeof(buf), "Skill XP ratio: %d%%", cfg.skill_xp_ratio);
+                    setStatus(buf, 1000);
+                } else if (cmd == NAV_DOWN) {
+                    if (cfg.skill_xp_ratio >= 5) cfg.skill_xp_ratio -= 5;
+                    else cfg.skill_xp_ratio = 0;
+                    save_load_system.saveGlobalConfig(cfg);
+                    char buf[40]; snprintf(buf, sizeof(buf), "Skill XP ratio: %d%%", cfg.skill_xp_ratio);
+                    setStatus(buf, 1000);
+                } else if (cmd == NAV_SELECT) {
+                    cfg.skill_xp_split = !cfg.skill_xp_split;
+                    save_load_system.saveGlobalConfig(cfg);
+                    setStatus(cfg.skill_xp_split ? "Skill XP split ON" : "Skill XP split OFF", 1200);
                 }
             }
             break;
@@ -2348,6 +2594,52 @@ void handleNavCommand(NavCommand cmd) {
 
         case UI_HELP:
             break;
+
+        case UI_ALARMS: {
+            if (cmd == NAV_LEFT) {
+                alarm_focus_timers = !alarm_focus_timers;
+            } else if (!alarm_focus_timers) {
+                // Alarms pane
+                if (cmd == NAV_UP && alarm_sel_index > 0) alarm_sel_index--;
+                else if (cmd == NAV_DOWN && alarm_sel_index + 1 < alarm_count) alarm_sel_index++;
+                else if (cmd == NAV_SELECT && alarm_sel_index < alarm_count) {
+                    alarm_entries[alarm_sel_index].enabled = !alarm_entries[alarm_sel_index].enabled;
+                    setStatus(alarm_entries[alarm_sel_index].enabled ? "Alarm enabled" : "Alarm disabled", 1000);
+                    save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
+                } else if (cmd == NAV_BACK && alarm_sel_index < alarm_count) {
+                    // Delete selected alarm
+                    for (uint8_t i = alarm_sel_index; i < alarm_count - 1; i++)
+                        alarm_entries[i] = alarm_entries[i + 1];
+                    alarm_count--;
+                    if (alarm_sel_index >= alarm_count && alarm_count > 0) alarm_sel_index = alarm_count - 1;
+                    save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
+                    setStatus("Alarm removed", 1000);
+                }
+            } else {
+                // Timers pane
+                if (cmd == NAV_UP && timer_sel_index > 0) timer_sel_index--;
+                else if (cmd == NAV_DOWN && timer_sel_index + 1 < timer_count) timer_sel_index++;
+                else if (cmd == NAV_SELECT && timer_sel_index < timer_count) {
+                    TimerEntry& te = timer_entries[timer_sel_index];
+                    te.running = !te.running;
+                    if (te.running) {
+                        // Record start as unix timestamp
+                        te.start_unix_time = (uint32_t)time_sync.getCurrentTime();
+                    }
+                    setStatus(te.running ? "Timer started" : "Timer paused", 1000);
+                    save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
+                } else if (cmd == NAV_BACK && timer_sel_index < timer_count) {
+                    // Delete selected timer
+                    for (uint8_t i = timer_sel_index; i < timer_count - 1; i++)
+                        timer_entries[i] = timer_entries[i + 1];
+                    timer_count--;
+                    if (timer_sel_index >= timer_count && timer_count > 0) timer_sel_index = timer_count - 1;
+                    save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
+                    setStatus("Timer removed", 1000);
+                }
+            }
+            break;
+        }
     }
 }
 
@@ -2476,24 +2768,24 @@ void handleKeyInput(char key) {
 
     // TAB globally opens screen selector (handled in loop before this function).
 
-    // Global manual health shortcut, except in settings.
-    if ((key == 'h' || key == 'H') && current_screen != UI_SETTINGS) {
-        manual_health_active = true;
-        manual_health_input_percent = health_system.getHealth();
-        manual_health_last_input_time = millis();
-        setStatus("Health input - 1:min 0:max or -/=", 3000);
+    // 'H' key toggles per-screen help overlay. When open, closes it; otherwise opens it.
+    // In shop setup mode, 'H' cycles recipe builder slot instead.
+    if (key == 'h' || key == 'H') {
+        if (help_overlay_active) {
+            help_overlay_active = false;
+            return;
+        }
+        if (current_screen == UI_SHOP && shop_setup_mode) {
+            recipe_builder_slot = (recipe_builder_slot + 1) % 5;
+            return;
+        }
+        help_overlay_active = true;
         return;
     }
 
     switch (current_screen) {
         case UI_DASHBOARD:
-            if (key == 'm' || key == 'M') {
-                setStatus("Manual mode in SETTINGS only", 1200);
-            } else if (key == 'b' || key == 'B') {
-                health_system.setTimeBasedMode();
-                health_system.setTimeBasedCycle(8, 22);
-                setStatus("Time health mode");
-            } else if (key == 'f' || key == 'F') {
+            if (key == 'f' || key == 'F') {
                 failTaskAtIndex(selected_task_index);
             }
             break;
@@ -2556,9 +2848,13 @@ void handleKeyInput(char key) {
                 if (cat) overlay_mode = OVERLAY_SKILL_FIELD_MENU;
                 else setStatus("No category selected");
             } else if (!skill_edit_mode && key == ' ') {
-                // Toggle spider chart view outside edit mode
-                skill_spider_show_category = !skill_spider_show_category;
-                setStatus(skill_spider_show_category ? "Chart: skills in category" : "Chart: category overview", 1000);
+                // Cycle through 4 spider chart modes
+                skill_spider_mode = (skill_spider_mode + 1) % 4;
+                static const char* chart_names[] = {
+                    "Chart: cat level", "Chart: cat total XP",
+                    "Chart: skill level", "Chart: skill total XP"
+                };
+                setStatus(chart_names[skill_spider_mode], 1000);
             } else if (key == 'a' || key == 'A') {
                 beginTextInput(INPUT_ADD_CATEGORY);
             } else if (key == 'k' || key == 'K') {
@@ -2629,8 +2925,6 @@ void handleKeyInput(char key) {
                 } else if (recipe_builder_slot == 4) {
                     if (recipe_builder_output_qty > 1) recipe_builder_output_qty--;
                 }
-            } else if (shop_setup_mode && (key == 'h' || key == 'H')) {
-                recipe_builder_slot = (recipe_builder_slot + 1) % 5;
             }
             break;
 
@@ -2661,6 +2955,60 @@ void handleKeyInput(char key) {
 
         case UI_SAVE_LOAD:
             break;
+
+        case UI_ALARMS: {
+            if (!alarm_focus_timers) {
+                // Alarm pane key handling
+                if (key == 'a' || key == 'A') {
+                    // Add new alarm
+                    if (alarm_count < MAX_ALARMS) {
+                        alarm_edit_index = alarm_count;
+                        memset(&alarm_entries[alarm_count], 0, sizeof(AlarmEntry));
+                        alarm_entries[alarm_count].active = true;
+                        alarm_entries[alarm_count].enabled = true;
+                        alarm_entries[alarm_count].hour = alarm_add_hour;
+                        alarm_entries[alarm_count].minute = alarm_add_minute;
+                        alarm_count++;
+                        save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
+                        beginTextInput(INPUT_ALARM_NAME, alarm_edit_index);
+                    } else {
+                        setStatus("Max alarms reached");
+                    }
+                } else if ((key == '+' || key == '=') && alarm_sel_index < alarm_count) {
+                    alarm_entries[alarm_sel_index].minute++;
+                    if (alarm_entries[alarm_sel_index].minute >= 60) { alarm_entries[alarm_sel_index].minute = 0; alarm_entries[alarm_sel_index].hour = (alarm_entries[alarm_sel_index].hour + 1) % 24; }
+                    save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
+                } else if (key == '-' && alarm_sel_index < alarm_count) {
+                    if (alarm_entries[alarm_sel_index].minute > 0) alarm_entries[alarm_sel_index].minute--;
+                    else { alarm_entries[alarm_sel_index].minute = 59; alarm_entries[alarm_sel_index].hour = (alarm_entries[alarm_sel_index].hour + 23) % 24; }
+                    save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
+                }
+            } else {
+                // Timer pane key handling
+                if (key == 't' || key == 'T') {
+                    // Add new countdown timer
+                    if (timer_count < MAX_TIMERS) {
+                        memset(&timer_entries[timer_count], 0, sizeof(TimerEntry));
+                        timer_entries[timer_count].active = true;
+                        timer_entries[timer_count].duration_seconds = alarm_add_duration_seconds;
+                        alarm_edit_index = timer_count;
+                        timer_count++;
+                        save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
+                        beginTextInput(INPUT_TIMER_NAME, alarm_edit_index);
+                    } else {
+                        setStatus("Max timers reached");
+                    }
+                } else if ((key == '+' || key == '=') && timer_sel_index < timer_count) {
+                    timer_entries[timer_sel_index].duration_seconds += 60;
+                    save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
+                } else if (key == '-' && timer_sel_index < timer_count) {
+                    if (timer_entries[timer_sel_index].duration_seconds >= 60)
+                        timer_entries[timer_sel_index].duration_seconds -= 60;
+                    save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
+                }
+            }
+            break;
+        }
     }
 }
 
@@ -2688,6 +3036,7 @@ void renderUI() {
     else if (current_screen == UI_SAVE_LOAD) screen_name = "SAVE";
     else if (current_screen == UI_SETTINGS) screen_name = "SETT";
     else if (current_screen == UI_HELP) screen_name = "HELP";
+    else if (current_screen == UI_ALARMS) screen_name = "ALARMS";
 
     ui_canvas.fillRoundRect(0, 0, 240, 20, 4, accent);
     ui_canvas.setTextColor(BLACK, accent);
@@ -2728,7 +3077,7 @@ void renderUI() {
     batt = M5Cardputer.Power.getBatteryLevel();
     #endif
 
-    // Info bar below header: date + time + battery.
+    // Info bar below header: date + time + [timer bar] + battery.
     ui_canvas.fillRoundRect(0, 21, 240, 12, 2, 0x18C3);
     ui_canvas.setTextColor(0xE71C, 0x18C3);
     ui_canvas.setTextSize(1);
@@ -2736,6 +3085,54 @@ void renderUI() {
     ui_canvas.printf("%s %s", date_part.c_str(), time_part.c_str());
     ui_canvas.setCursor(188, 24);
     ui_canvas.printf("BAT %d%%", batt);
+
+    // Timer mini-bar: find longest-running (earliest start) timer
+    {
+        TimerEntry* rt = nullptr;
+        uint32_t earliest = 0xFFFFFFFFUL;
+        time_t cur_unix = time_sync.getCurrentTime();
+        for (uint8_t i = 0; i < timer_count; i++) {
+            if (timer_entries[i].active && timer_entries[i].running && timer_entries[i].start_unix_time != 0) {
+                if (timer_entries[i].start_unix_time < earliest) {
+                    earliest = timer_entries[i].start_unix_time;
+                    rt = &timer_entries[i];
+                }
+            }
+        }
+        if (rt) {
+            uint32_t elapsed = (cur_unix > (time_t)rt->start_unix_time) ?
+                               (uint32_t)(cur_unix - rt->start_unix_time) : 0;
+            if (elapsed > rt->duration_seconds) elapsed = rt->duration_seconds;
+            uint32_t remaining = rt->duration_seconds - elapsed;
+            float progress = (rt->duration_seconds > 0) ?
+                             (1.0f - (float)elapsed / (float)rt->duration_seconds) : 0.0f;
+            // Draw mini bar at x=103
+            int bar_x = 103, bar_y = 23, bar_w = 28, bar_h = 6;
+            ui_canvas.fillRect(bar_x, bar_y, bar_w, bar_h, 0x0841);
+            ui_canvas.fillRect(bar_x, bar_y, (int)(bar_w * progress), bar_h, 0x07FF);
+            // Timer name/label
+            char label[8];
+            if (rt->linked_item_id > 0) {
+                const ShopItem* it = shop_system.getItem(rt->linked_item_id);
+                if (it) {
+                    snprintf(label, sizeof(label), "%.4s", it->name);
+                } else {
+                    snprintf(label, sizeof(label), "#%d", rt->linked_item_id);
+                }
+            } else if (rt->name[0]) {
+                snprintf(label, sizeof(label), "%.4s", rt->name);
+            } else {
+                snprintf(label, sizeof(label), "T%d", (int)(rt - timer_entries) + 1);
+            }
+            char tstr[12];
+            uint32_t h = remaining / 3600, m = (remaining % 3600) / 60, s = remaining % 60;
+            if (h > 0) snprintf(tstr, sizeof(tstr), "%u:%02u:%02u", (unsigned)h, (unsigned)m, (unsigned)s);
+            else snprintf(tstr, sizeof(tstr), "%u:%02u", (unsigned)m, (unsigned)s);
+            ui_canvas.setTextColor(0xE71C, 0x18C3);
+            ui_canvas.setCursor(bar_x + bar_w + 2, 24);
+            ui_canvas.printf("%s %s", label, tstr);
+        }
+    }
 
     // Bottom bar moved up for full visibility.
     ui_canvas.fillRoundRect(0, 124, 240, 14, 2, panel);
@@ -2766,10 +3163,12 @@ void renderUI() {
     } else if (current_screen == UI_SAVE_LOAD) {
         scroll_text += ";/.:Option  ENT:Run  TAB:Menu";
     } else if (current_screen == UI_SETTINGS) {
-        if (sett_section == SETT_WIFI) scroll_text += ";/.:Network  ENT:Connect  DEL:Scan  TAB:Menu";
+        if (sett_section == SETT_WIFI) scroll_text += "LEFT:Toggle Saved/Scan  ;/.:Select  ENT:Connect  DEL:Scan/Remove  TAB:Menu";
         else scroll_text += ",/:Section  ;/.:Value  ENT:Apply  TAB:Menu";
     } else if (current_screen == UI_HELP) {
-        scroll_text += "Read guide  TAB:Menu";
+        scroll_text += "Read guide  H:Close help overlay  TAB:Menu";
+    } else if (current_screen == UI_ALARMS) {
+        scroll_text += "LEFT:Alarms/Timers  ;/.:Select  ENT:Toggle  DEL:Remove  A:Add alarm  T:Add timer  +/-:Adjust  TAB:Menu";
     }
     const int scroll_origin_x = 60;  // keep left quarter free for money
     int text_px = (int)scroll_text.length() * 6;
@@ -3244,9 +3643,19 @@ void renderUI() {
         ui_canvas.setCursor(4, 124);
         ui_canvas.print(skill_edit_mode ? "E:exit edit" : "E:edit  SPC:chart  A:+cat  K:+skill");
         ui_canvas.setTextColor(text, bg);
-        // Spider chart on the right side
-        if (skill_spider_show_category && cat) {
+        // Spider chart on the right side — 4 modes
+        static const char* chart_labels[] = {"Lvl", "TXP", "SLv", "STX"};
+        ui_canvas.setTextColor(muted, bg);
+        ui_canvas.setCursor(166, 34);
+        ui_canvas.printf("[%s]", chart_labels[skill_spider_mode]);
+        if (skill_spider_mode == 0) {
+            drawSkillsSpiderChart(200, 75, 30);
+        } else if (skill_spider_mode == 1) {
+            drawSpiderCategoryTotalXP(200, 75, 30);
+        } else if (skill_spider_mode == 2 && cat) {
             drawSkillsSpiderChartCategory(200, 75, 30, cat->id);
+        } else if (skill_spider_mode == 3 && cat) {
+            drawSpiderSkillsTotalXP(200, 75, 30, cat->id);
         } else {
             drawSkillsSpiderChart(200, 75, 30);
         }
@@ -3336,29 +3745,88 @@ void renderUI() {
         ui_canvas.println("4 load shared shop");
         ui_canvas.println("5 clear skills save");
     } else if (current_screen == UI_SETTINGS) {
-        static const char* sett_names[] = {"WiFi", "Timezone", "Time", "Health", "RandTask", "Feedback"};
+        static const char* sett_names[] = {"WiFi", "Timezone", "Time", "Health", "RandTask", "Feedback", "SkillXP"};
         ui_canvas.printf("SETTINGS [%s]\n", sett_names[(int)sett_section]);
 
         if (sett_section == SETT_WIFI) {
+            // Show two sub-lists: saved (left/top) and scanned (right/bottom)
+            // Top half: saved networks
+            {
+                uint16_t hcol = sett_wifi_focus_saved ? accent : panel;
+                uint16_t htxt = sett_wifi_focus_saved ? BLACK : muted;
+                ui_canvas.fillRoundRect(2, 46, 236, 10, 2, hcol);
+                ui_canvas.setTextColor(htxt, hcol);
+                ui_canvas.setCursor(6, 48);
+                uint8_t svc = settings_system.getSavedWiFiCount();
+                ui_canvas.printf("Saved (%d)  LEFT=switch", (int)svc);
+            }
+            uint8_t svc = settings_system.getSavedWiFiCount();
+            uint8_t sv_start = (sett_wifi_saved_sel > 1) ? sett_wifi_saved_sel - 1 : 0;
+            uint8_t drawn_sv = 0;
+            for (uint8_t i = sv_start; i < svc && drawn_sv < 2; i++, drawn_sv++) {
+                const SavedWiFiCred* cred = settings_system.getSavedWiFi(i);
+                if (!cred) continue;
+                bool sel = (sett_wifi_focus_saved && i == sett_wifi_saved_sel);
+                uint16_t rb = sel ? accent : panel;
+                uint16_t rt = sel ? BLACK : text;
+                int y = 57 + drawn_sv * 10;
+                ui_canvas.fillRoundRect(2, y - 1, 236, 9, 2, rb);
+                ui_canvas.setTextColor(rt, rb);
+                ui_canvas.setCursor(6, y + 1);
+                bool connected = settings_system.isWiFiConnected() &&
+                    strcmp(settings_system.getConnectedSSID(), cred->ssid) == 0;
+                ui_canvas.printf("%s%s", connected ? "*" : " ", truncateUiText(cred->ssid, 19).c_str());
+            }
+            if (svc == 0) {
+                ui_canvas.setTextColor(muted, bg);
+                ui_canvas.setCursor(6, 58);
+                ui_canvas.print("(none saved)");
+            }
+            // Middle divider: status
+            {
+                uint16_t statcol = settings_system.isWiFiConnected() ? 0x07E0 : 0xF800;
+                ui_canvas.fillRoundRect(2, 78, 236, 9, 2, 0x1082);
+                ui_canvas.setTextColor(statcol, 0x1082);
+                ui_canvas.setCursor(6, 80);
+                if (settings_system.isWiFiConnected())
+                    ui_canvas.printf("Connected: %.22s", settings_system.getConnectedSSID());
+                else
+                    ui_canvas.print("Not connected");
+            }
+            // Bottom half: scanned networks
+            {
+                uint16_t hcol = !sett_wifi_focus_saved ? accent : panel;
+                uint16_t htxt = !sett_wifi_focus_saved ? BLACK : muted;
+                ui_canvas.fillRoundRect(2, 88, 236, 9, 2, hcol);
+                ui_canvas.setTextColor(htxt, hcol);
+                ui_canvas.setCursor(6, 90);
+                uint8_t cnt = settings_system.getScannedCount();
+                ui_canvas.printf("Available (%d)  DEL=scan", (int)cnt);
+            }
             uint8_t cnt = settings_system.getScannedCount();
+            uint8_t sc_start = (sett_wifi_sel > 0) ? sett_wifi_sel - 0 : 0;
             if (cnt == 0) {
-                ui_canvas.println("No scan. Del=Scan");
+                ui_canvas.setTextColor(muted, bg);
+                ui_canvas.setCursor(6, 99);
+                ui_canvas.print("(none) DEL to scan");
             } else {
-                for (uint8_t i = 0; i < cnt && i < 6; i++) {
+                uint8_t drawn_sc = 0;
+                for (uint8_t i = sc_start; i < cnt && drawn_sc < 2; i++, drawn_sc++) {
                     const WiFiNetwork* n = settings_system.getScannedNetwork(i);
-                    if (!n) break;
-                    ui_canvas.printf("%c%s %ddBm %s\n",
-                        i == sett_wifi_sel ? '>' : ' ',
-                        n->ssid, (int)n->rssi,
-                        n->has_password ? "*" : "");
+                    if (!n) continue;
+                    bool sel = (!sett_wifi_focus_saved && i == sett_wifi_sel);
+                    uint16_t rb = sel ? accent : panel;
+                    uint16_t rt = sel ? BLACK : text;
+                    int y = 98 + drawn_sc * 10;
+                    ui_canvas.fillRoundRect(2, y - 1, 236, 9, 2, rb);
+                    ui_canvas.setTextColor(rt, rb);
+                    ui_canvas.setCursor(6, y + 1);
+                    ui_canvas.printf("%s %ddBm%s",
+                        truncateUiText(n->ssid, 15).c_str(),
+                        (int)n->rssi,
+                        n->has_password ? " *" : "");
                 }
             }
-            if (settings_system.isWiFiConnected()) {
-                ui_canvas.printf("Connected: %s\n", settings_system.getConnectedSSID());
-            } else {
-                ui_canvas.println("Not connected");
-            }
-            ui_canvas.println("Enter=connect Del=scan");
         } else if (sett_section == SETT_TIMEZONE) {
             const GlobalSettings& cfg = settings_system.settings();
             ui_canvas.printf("UTC%+d DST:%s\n", (int)cfg.timezone_offset, cfg.timezone_dst ? "ON" : "OFF");
@@ -3388,21 +3856,115 @@ void renderUI() {
             const GlobalSettings& cfg = settings_system.settings();
             ui_canvas.printf("Visual:%s\n", cfg.visual_feedback_enabled ? "ON" : "OFF");
             ui_canvas.printf("Audio:%s\n", cfg.audio_feedback_enabled ? "ON" : "OFF");
-            ui_canvas.printf("Volume:%d\n", (int)cfg.audio_volume);
+            ui_canvas.printf("Volume:%d%%\n", (int)cfg.audio_volume);
             ui_canvas.println("Enter toggle visual");
-            ui_canvas.println("`: toggle audio ;/. vol");
-            ui_canvas.println("Task fail event: key F");
+            ui_canvas.println("`: toggle audio  ;/. vol (0-100)");
+        } else if (sett_section == SETT_SKILL_XP) {
+            const GlobalSettings& cfg = settings_system.settings();
+            // Draw ratio bar
+            ui_canvas.setTextColor(text, bg);
+            ui_canvas.printf("XP Ratio: %d%%\n", (int)cfg.skill_xp_ratio);
+            int bar_y = 66;
+            ui_canvas.fillRect(4, bar_y, 200, 8, panel);
+            ui_canvas.fillRect(4, bar_y, (cfg.skill_xp_ratio * 200) / 100, 8, accent);
+            ui_canvas.setTextColor(muted, bg);
+            ui_canvas.setCursor(4, bar_y + 10);
+            ui_canvas.printf("Split: %s\n", cfg.skill_xp_split ? "ON (div among skills)" : "OFF (each skill full)");
+            ui_canvas.println(";/. ratio  Enter=toggle split");
+            ui_canvas.println("Example: 500XP @50% = 250/skill");
+            if (cfg.skill_xp_split)
+                ui_canvas.printf("With split %d skills: %d each\n",
+                    2, (int)(500 * cfg.skill_xp_ratio / 100 / 2));
         }
     } else if (current_screen == UI_HELP) {
-        ui_canvas.println("M5TDG Help");
-        ui_canvas.println("ESC = open selector");
-        ui_canvas.println("Arrows , ; . / = nav");
-        ui_canvas.println("Enter = select/confirm");
-        ui_canvas.println("` = back/cancel");
-        ui_canvas.println("H = manual health");
-        ui_canvas.println("G = screensaver");
-        ui_canvas.println("[ ] = dim/bright");
-    }   // end UI_SETTINGS
+        ui_canvas.setTextColor(text, bg);
+        ui_canvas.println("M5TDGamify - Quick Guide");
+        ui_canvas.println("TAB: screen menu  H: help overlay");
+        ui_canvas.println("DASH: tasks overview, F=fail task");
+        ui_canvas.println("TASKS: manage, E=edit, N=new");
+        ui_canvas.println("SKILLS: SPC cycles spider charts");
+        ui_canvas.println("SHOP: buy/craft items");
+        ui_canvas.println("SETTINGS: WiFi,TZ,Health,SkillXP");
+        ui_canvas.println("ALARMS: A=add alarm, T=add timer");
+    } else if (current_screen == UI_ALARMS) {
+        // Left pane: alarms; right pane: timers
+        // Divider
+        ui_canvas.drawFastVLine(120, 35, 88, 0x4208);
+        // Left pane header
+        {
+            uint16_t hcol = alarm_focus_timers ? panel : accent;
+            uint16_t htxt = alarm_focus_timers ? muted : BLACK;
+            ui_canvas.fillRoundRect(2, 35, 116, 10, 2, hcol);
+            ui_canvas.setTextColor(htxt, hcol);
+            ui_canvas.setCursor(6, 37);
+            ui_canvas.printf("ALARMS (%d/%d)", alarm_count, MAX_ALARMS);
+        }
+        // Alarm rows
+        time_t cur_t = time_sync.getCurrentTime();
+        struct tm ti_cur; localtime_r(&cur_t, &ti_cur);
+        for (uint8_t i = 0; i < alarm_count && i < 6; i++) {
+            bool sel = (!alarm_focus_timers && i == alarm_sel_index);
+            uint16_t rowbg = sel ? accent : panel;
+            uint16_t rowtxt = sel ? BLACK : (alarm_entries[i].enabled ? text : muted);
+            int y = 47 + i * 11;
+            ui_canvas.fillRoundRect(2, y - 1, 116, 10, 2, rowbg);
+            ui_canvas.setTextColor(rowtxt, rowbg);
+            ui_canvas.setCursor(6, y + 1);
+            ui_canvas.printf("%02d:%02d %s %s", alarm_entries[i].hour, alarm_entries[i].minute,
+                             alarm_entries[i].enabled ? "ON " : "OFF",
+                             alarm_entries[i].name[0] ? alarm_entries[i].name : "Alarm");
+        }
+        if (alarm_count == 0) {
+            ui_canvas.setTextColor(muted, bg);
+            ui_canvas.setCursor(6, 50);
+            ui_canvas.print("No alarms. Press A");
+        }
+        // Right pane header
+        {
+            uint16_t hcol = alarm_focus_timers ? accent : panel;
+            uint16_t htxt = alarm_focus_timers ? BLACK : muted;
+            ui_canvas.fillRoundRect(122, 35, 116, 10, 2, hcol);
+            ui_canvas.setTextColor(htxt, hcol);
+            ui_canvas.setCursor(126, 37);
+            ui_canvas.printf("TIMERS (%d/%d)", timer_count, MAX_TIMERS);
+        }
+        // Timer rows
+        for (uint8_t i = 0; i < timer_count && i < 6; i++) {
+            bool sel = (alarm_focus_timers && i == timer_sel_index);
+            uint16_t rowbg = sel ? accent : panel;
+            uint16_t rowtxt = sel ? BLACK : (timer_entries[i].running ? text : muted);
+            int y = 47 + i * 11;
+            ui_canvas.fillRoundRect(122, y - 1, 116, 10, 2, rowbg);
+            ui_canvas.setTextColor(rowtxt, rowbg);
+            ui_canvas.setCursor(126, y + 1);
+            // Compute remaining
+            uint32_t remaining = timer_entries[i].duration_seconds;
+            if (timer_entries[i].running && timer_entries[i].start_unix_time != 0) {
+                uint32_t elapsed = (cur_t > (time_t)timer_entries[i].start_unix_time) ?
+                                   (uint32_t)(cur_t - timer_entries[i].start_unix_time) : 0;
+                remaining = (elapsed < timer_entries[i].duration_seconds) ?
+                            (timer_entries[i].duration_seconds - elapsed) : 0;
+                if (remaining == 0 && timer_entries[i].running) {
+                    timer_entries[i].running = false;
+                    setStatus(timer_entries[i].name[0] ? timer_entries[i].name : "Timer done!", 5000);
+                }
+            }
+            uint32_t rh = remaining / 3600, rm = (remaining % 3600) / 60, rs = remaining % 60;
+            char tstr[16];
+            if (rh > 0) snprintf(tstr, sizeof(tstr), "%u:%02u:%02u", (unsigned)rh, (unsigned)rm, (unsigned)rs);
+            else snprintf(tstr, sizeof(tstr), "%u:%02u", (unsigned)rm, (unsigned)rs);
+            const char* tname = timer_entries[i].name[0] ? timer_entries[i].name : "Timer";
+            ui_canvas.printf("%.5s %s %s", tname, tstr, timer_entries[i].running ? ">" : "|");
+        }
+        if (timer_count == 0) {
+            ui_canvas.setTextColor(muted, bg);
+            ui_canvas.setCursor(126, 50);
+            ui_canvas.print("No timers. Press T");
+        }
+        ui_canvas.setTextColor(muted, bg);
+        ui_canvas.setCursor(2, 116);
+        ui_canvas.print("LEFT:switch  ENT:toggle  DEL:del");
+    }
 
     if (millis() < status_line_until) {
         // Draw status in a visible location (upper area)
@@ -3411,6 +3973,57 @@ void renderUI() {
         ui_canvas.setCursor(6, 109);
         ui_canvas.setTextSize(1);
         ui_canvas.println(status_line);
+    }
+
+    // Help overlay — drawn on top of everything else
+    if (help_overlay_active) {
+        ui_canvas.fillRoundRect(4, 22, 232, 100, 4, 0x0841);
+        ui_canvas.drawRoundRect(4, 22, 232, 100, 4, accent);
+        ui_canvas.setTextColor(accent, 0x0841);
+        ui_canvas.setCursor(8, 26);
+        ui_canvas.print("HELP  [H to close]");
+        ui_canvas.setTextColor(text, 0x0841);
+        ui_canvas.setCursor(8, 36);
+        if (current_screen == UI_DASHBOARD) {
+            ui_canvas.println("DASHBOARD: overview & health");
+            ui_canvas.println("F=fail task  TAB=screen menu");
+            ui_canvas.println("[/]=brightness  G=screensaver");
+        } else if (current_screen == UI_TASKS) {
+            ui_canvas.println("TASKS: view & edit your tasks");
+            ui_canvas.println("N=new  E=toggle edit  D=delete");
+            ui_canvas.println("ENT=done  SPC=open editor");
+            ui_canvas.println("F=fail task  TAB=screen menu");
+        } else if (current_screen == UI_SKILLS) {
+            ui_canvas.println("SKILLS: track skill progress");
+            ui_canvas.println("A=add category  K=add skill");
+            ui_canvas.println("SPC=cycle chart (4 modes)");
+            ui_canvas.println("Charts: cat-lvl,cat-xp,sk-lvl,sk-xp");
+        } else if (current_screen == UI_SHOP) {
+            ui_canvas.println("SHOP: buy & craft items");
+            ui_canvas.println(",/=focus  Z=setup mode");
+            ui_canvas.println("N=add item  R=add recipe");
+            ui_canvas.println("ENT=buy/craft  E=edit mode");
+        } else if (current_screen == UI_SETTINGS) {
+            ui_canvas.println("SETTINGS sections:");
+            ui_canvas.println("WiFi: LEFT=saved/scan, ENT=connect");
+            ui_canvas.println("Skill XP: ratio% + split option");
+            ui_canvas.println(",/=prev/next section");
+        } else if (current_screen == UI_ALARMS) {
+            ui_canvas.println("ALARMS & TIMERS");
+            ui_canvas.println("LEFT=switch pane  A=add alarm");
+            ui_canvas.println("T=add timer  +/-=adjust time");
+            ui_canvas.println("ENT=toggle  DEL=remove");
+        } else if (current_screen == UI_PROFILES) {
+            ui_canvas.println("PROFILES: manage game profiles");
+            ui_canvas.println("N=new  ENT=load  DEL=delete");
+        } else if (current_screen == UI_INVENTORY) {
+            ui_canvas.println("INVENTORY: view owned items");
+        } else if (current_screen == UI_SAVE_LOAD) {
+            ui_canvas.println("SAVE/LOAD: manual data control");
+        } else {
+            ui_canvas.println("Press H to close this overlay");
+            ui_canvas.println("Available on every screen.");
+        }
     }
 
     ui_canvas.pushSprite(0, 0);
@@ -3447,10 +4060,52 @@ void setup() {
         sett_time_vals[0] = 0; sett_time_vals[1] = 0; sett_time_vals[2] = 0;
         sett_time_vals[3] = 1; sett_time_vals[4] = 1; sett_time_vals[5] = 26;
 
-        // Try auto WiFi reconnect with saved credentials
-        if (cfg.wifi_ssid[0] != '\0') {
-            if (settings_system.connectWiFi(cfg.wifi_ssid, cfg.wifi_password, 6000)) {
-                time_sync.syncWithWiFi(cfg.wifi_ssid, cfg.wifi_password);
+        // Try to restore time from RTC first (no network needed)
+        #if defined(ARDUINO)
+        auto rtc_dt = M5Cardputer.Rtc.getDateTime();
+        if (rtc_dt.date.year >= 2024) {
+            struct tm tm_rtc = {};
+            tm_rtc.tm_year = rtc_dt.date.year - 1900;
+            tm_rtc.tm_mon  = rtc_dt.date.month - 1;
+            tm_rtc.tm_mday = rtc_dt.date.date;
+            tm_rtc.tm_hour = rtc_dt.time.hours;
+            tm_rtc.tm_min  = rtc_dt.time.minutes;
+            tm_rtc.tm_sec  = rtc_dt.time.seconds;
+            time_t rtc_time = mktime(&tm_rtc);
+            struct timeval tv_rtc = { rtc_time, 0 };
+            settimeofday(&tv_rtc, nullptr);
+        }
+        #endif
+
+        // Try auto WiFi reconnect — use best available network from saved list
+        bool wifi_ok = settings_system.connectToBestAvailableWiFi(6000);
+        if (!wifi_ok && cfg.wifi_ssid[0] != '\0') {
+            // Fall back to legacy single credential
+            wifi_ok = settings_system.connectWiFi(cfg.wifi_ssid, cfg.wifi_password, 6000);
+        }
+        if (wifi_ok) {
+            // Sync NTP and write back to RTC
+            const char* ssid = settings_system.getConnectedSSID();
+            const SavedWiFiCred* cred = nullptr;
+            for (uint8_t i = 0; i < settings_system.getSavedWiFiCount(); i++) {
+                const SavedWiFiCred* c = settings_system.getSavedWiFi(i);
+                if (c && strcmp(c->ssid, ssid) == 0) { cred = c; break; }
+            }
+            const char* pass = cred ? cred->password : cfg.wifi_password;
+            if (time_sync.syncWithWiFi(ssid, pass)) {
+                #if defined(ARDUINO)
+                time_t now_sync = time_sync.getCurrentTime();
+                struct tm ti_sync;
+                localtime_r(&now_sync, &ti_sync);
+                m5::rtc_datetime_t dt_sync;
+                dt_sync.date.year = ti_sync.tm_year + 1900;
+                dt_sync.date.month = ti_sync.tm_mon + 1;
+                dt_sync.date.date = ti_sync.tm_mday;
+                dt_sync.time.hours = ti_sync.tm_hour;
+                dt_sync.time.minutes = ti_sync.tm_min;
+                dt_sync.time.seconds = ti_sync.tm_sec;
+                M5Cardputer.Rtc.setDateTime(dt_sync);
+                #endif
             }
         }
     } else {
@@ -3486,12 +4141,55 @@ void setup() {
         saveShopData();
     }
 
+    // Load alarms and timers
+    if (storage_ready) {
+        save_load_system.loadAlarmsAndTimers(alarm_entries, alarm_count, MAX_ALARMS,
+                                             timer_entries, timer_count, MAX_TIMERS);
+    }
+
     setStatus("Ready");
 }
 
 void loop() {
     M5Cardputer.update();
     health_system.setCurrentTime(time_sync.getCurrentTime());
+
+    // Check alarms
+    {
+        time_t now_alarm = time_sync.getCurrentTime();
+        struct tm ta; localtime_r(&now_alarm, &ta);
+        bool alarm_dirty = false;
+        for (uint8_t i = 0; i < alarm_count; i++) {
+            if (!alarm_entries[i].active || !alarm_entries[i].enabled) continue;
+            if (ta.tm_hour == alarm_entries[i].hour && ta.tm_min == alarm_entries[i].minute) {
+                if (!alarm_entries[i].triggered_today) {
+                    alarm_entries[i].triggered_today = true;
+                    alarm_dirty = true;
+                    char msg[40];
+                    snprintf(msg, sizeof(msg), "ALARM: %s",
+                             alarm_entries[i].name[0] ? alarm_entries[i].name : "Wake up!");
+                    setStatus(msg, 10000);
+                    const GlobalSettings& acfg = settings_system.settings();
+                    if (acfg.audio_feedback_enabled) {
+                        uint8_t spk_vol = (uint8_t)((uint16_t)acfg.audio_volume * 255 / 100);
+                        M5Cardputer.Speaker.setVolume(spk_vol);
+                        for (int bi = 0; bi < 3; bi++) {
+                            M5Cardputer.Speaker.tone(880, 200);
+                            delay(250);
+                        }
+                    }
+                }
+            } else {
+                if (alarm_entries[i].triggered_today) {
+                    alarm_entries[i].triggered_today = false;
+                    alarm_dirty = true;
+                }
+            }
+        }
+        if (alarm_dirty && storage_ready) {
+            save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
+        }
+    }
 
     // G0 physical button: toggle screen on/off.
     if (M5Cardputer.BtnA.wasClicked()) {
@@ -3654,8 +4352,14 @@ void loop() {
             nav_handled = true;
         }
 
-        // DEL scans WiFi only in WiFi settings section.
+        // DEL scans WiFi / removes saved WiFi in WiFi settings section.
         if (!nav_handled && !text_input_active && del_pressed && current_screen == UI_SETTINGS && sett_section == SETT_WIFI) {
+            handleNavCommand(NAV_BACK);
+            nav_handled = true;
+        }
+
+        // DEL removes selected alarm or timer in alarms screen.
+        if (!nav_handled && !text_input_active && del_pressed && current_screen == UI_ALARMS) {
             handleNavCommand(NAV_BACK);
             nav_handled = true;
         }

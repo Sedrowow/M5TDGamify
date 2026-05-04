@@ -12,6 +12,7 @@
 #include "../tasks/TaskManager.h"
 #include "../shop/ShopSystem.h"
 #include "../settings/SettingsSystem.h"
+#include "../alarms/AlarmSystem.h"
 
 enum StorageBackend {
     STORAGE_BACKEND_SPIFFS = 0,
@@ -115,6 +116,11 @@ public:
 
     bool saveGlobalConfig(const GlobalSettings& cfg);
     bool loadGlobalConfig(GlobalSettings& cfg);
+
+    bool saveAlarmsAndTimers(const AlarmEntry alarms[], uint8_t alarm_count,
+                             const TimerEntry timers[], uint8_t timer_count);
+    bool loadAlarmsAndTimers(AlarmEntry alarms[], uint8_t& alarm_count, uint8_t max_alarms,
+                             TimerEntry timers[], uint8_t& timer_count, uint8_t max_timers);
 
     String getLastError() const { return last_error; }
 };

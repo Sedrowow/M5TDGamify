@@ -1172,8 +1172,15 @@ bool SaveLoadSystem::saveGlobalConfig(const GlobalSettings& cfg) {
     if (!active_fs) return false;
     String path = String(BASE_DIR) + "/global_config.txt";
     String data = "";
+    // Legacy single-cred (kept for backward-compat)
     data += "wifi_ssid=" + String(cfg.wifi_ssid) + "\n";
     data += "wifi_password=" + String(cfg.wifi_password) + "\n";
+    // Multi-credential list
+    data += "saved_wifi_count=" + String((int)cfg.saved_wifi_count) + "\n";
+    for (uint8_t i = 0; i < cfg.saved_wifi_count && i < MAX_SAVED_WIFI; i++) {
+        data += "saved_ssid" + String(i) + "=" + String(cfg.saved_wifi[i].ssid) + "\n";
+        data += "saved_pass" + String(i) + "=" + String(cfg.saved_wifi[i].password) + "\n";
+    }
     data += "timezone=" + String((int)cfg.timezone_offset) + "\n";
     data += "timezone_dst=" + String(cfg.timezone_dst ? 1 : 0) + "\n";
     data += "date_format_us=" + String(cfg.date_format_us ? 1 : 0) + "\n";
@@ -1183,6 +1190,8 @@ bool SaveLoadSystem::saveGlobalConfig(const GlobalSettings& cfg) {
     data += "visual_feedback=" + String(cfg.visual_feedback_enabled ? 1 : 0) + "\n";
     data += "audio_feedback=" + String(cfg.audio_feedback_enabled ? 1 : 0) + "\n";
     data += "audio_volume=" + String((int)cfg.audio_volume) + "\n";
+    data += "skill_xp_ratio=" + String((int)cfg.skill_xp_ratio) + "\n";
+    data += "skill_xp_split=" + String(cfg.skill_xp_split ? 1 : 0) + "\n";
     return writeTextFile(path, data);
 }
 
@@ -1191,6 +1200,9 @@ bool SaveLoadSystem::loadGlobalConfig(GlobalSettings& cfg) {
     String path = String(BASE_DIR) + "/global_config.txt";
     String data;
     if (!readTextFile(path, data)) return false;
+
+    // Track whether we loaded multi-creds or need to migrate legacy
+    bool have_multi_creds = false;
 
     int start = 0;
     while (start < (int)data.length()) {
@@ -1207,6 +1219,24 @@ bool SaveLoadSystem::loadGlobalConfig(GlobalSettings& cfg) {
             } else if (key == "wifi_password") {
                 strncpy(cfg.wifi_password, value.c_str(), MAX_PASSWORD_LEN - 1);
                 cfg.wifi_password[MAX_PASSWORD_LEN - 1] = '\0';
+            } else if (key == "saved_wifi_count") {
+                int v = value.toInt();
+                if (v < 0) v = 0;
+                if (v > MAX_SAVED_WIFI) v = MAX_SAVED_WIFI;
+                cfg.saved_wifi_count = (uint8_t)v;
+                if (cfg.saved_wifi_count > 0) have_multi_creds = true;
+            } else if (key.startsWith("saved_ssid")) {
+                int idx = key.substring(10).toInt();
+                if (idx >= 0 && idx < MAX_SAVED_WIFI) {
+                    strncpy(cfg.saved_wifi[idx].ssid, value.c_str(), MAX_SSID_LEN - 1);
+                    cfg.saved_wifi[idx].ssid[MAX_SSID_LEN - 1] = '\0';
+                }
+            } else if (key.startsWith("saved_pass")) {
+                int idx = key.substring(10).toInt();
+                if (idx >= 0 && idx < MAX_SAVED_WIFI) {
+                    strncpy(cfg.saved_wifi[idx].password, value.c_str(), MAX_PASSWORD_LEN - 1);
+                    cfg.saved_wifi[idx].password[MAX_PASSWORD_LEN - 1] = '\0';
+                }
             } else if (key == "timezone") {
                 cfg.timezone_offset = (int8_t)value.toInt();
             } else if (key == "timezone_dst") {
@@ -1226,11 +1256,108 @@ bool SaveLoadSystem::loadGlobalConfig(GlobalSettings& cfg) {
             } else if (key == "audio_volume") {
                 int v = value.toInt();
                 if (v < 0) v = 0;
-                if (v > 255) v = 255;
+                if (v > MAX_AUDIO_VOLUME) v = MAX_AUDIO_VOLUME;
                 cfg.audio_volume = (uint8_t)v;
+            } else if (key == "skill_xp_ratio") {
+                int v = value.toInt();
+                if (v < 0) v = 0;
+                if (v > 100) v = 100;
+                cfg.skill_xp_ratio = (uint8_t)v;
+            } else if (key == "skill_xp_split") {
+                cfg.skill_xp_split = value.toInt() != 0;
             }
         }
         start = end + 1;
+    }
+
+    // Migrate legacy single-credential to saved list if no multi-creds yet
+    if (!have_multi_creds && cfg.wifi_ssid[0] != '\0' && cfg.saved_wifi_count == 0) {
+        strncpy(cfg.saved_wifi[0].ssid, cfg.wifi_ssid, MAX_SSID_LEN - 1);
+        cfg.saved_wifi[0].ssid[MAX_SSID_LEN - 1] = '\0';
+        strncpy(cfg.saved_wifi[0].password, cfg.wifi_password, MAX_PASSWORD_LEN - 1);
+        cfg.saved_wifi[0].password[MAX_PASSWORD_LEN - 1] = '\0';
+        cfg.saved_wifi_count = 1;
+    }
+    return true;
+}
+
+bool SaveLoadSystem::saveAlarmsAndTimers(const AlarmEntry alarms[], uint8_t alarm_count,
+                                         const TimerEntry timers[], uint8_t timer_count) {
+    if (!active_fs) return false;
+    String path = String(BASE_DIR) + "/alarms.dat";
+    String data = "";
+    data += "alarm_count=" + String((int)alarm_count) + "\n";
+    for (uint8_t i = 0; i < alarm_count; i++) {
+        if (!alarms[i].active) continue;
+        data += "a" + String(i) + "_name=" + String(alarms[i].name) + "\n";
+        data += "a" + String(i) + "_hour=" + String((int)alarms[i].hour) + "\n";
+        data += "a" + String(i) + "_min=" + String((int)alarms[i].minute) + "\n";
+        data += "a" + String(i) + "_en=" + String(alarms[i].enabled ? 1 : 0) + "\n";
+    }
+    data += "timer_count=" + String((int)timer_count) + "\n";
+    for (uint8_t i = 0; i < timer_count; i++) {
+        if (!timers[i].active) continue;
+        data += "t" + String(i) + "_name=" + String(timers[i].name) + "\n";
+        data += "t" + String(i) + "_dur=" + String((unsigned long)timers[i].duration_seconds) + "\n";
+        data += "t" + String(i) + "_start=" + String((unsigned long)timers[i].start_unix_time) + "\n";
+        data += "t" + String(i) + "_run=" + String(timers[i].running ? 1 : 0) + "\n";
+        data += "t" + String(i) + "_item=" + String((int)timers[i].linked_item_id) + "\n";
+    }
+    return writeTextFile(path, data);
+}
+
+bool SaveLoadSystem::loadAlarmsAndTimers(AlarmEntry alarms[], uint8_t& alarm_count, uint8_t max_alarms,
+                                          TimerEntry timers[], uint8_t& timer_count, uint8_t max_timers) {
+    alarm_count = 0;
+    timer_count = 0;
+    if (!active_fs) return false;
+    String path = String(BASE_DIR) + "/alarms.dat";
+    String data;
+    if (!readTextFile(path, data)) return false;
+
+    // Pre-zero the arrays
+    for (uint8_t i = 0; i < max_alarms; i++) { memset(&alarms[i], 0, sizeof(AlarmEntry)); }
+    for (uint8_t i = 0; i < max_timers; i++) { memset(&timers[i], 0, sizeof(TimerEntry)); }
+
+    int start = 0;
+    while (start < (int)data.length()) {
+        int end_pos = data.indexOf('\n', start);
+        if (end_pos < 0) end_pos = data.length();
+        String line = data.substring(start, end_pos);
+        line.trim();
+        String key, value;
+        if (parseKeyValueLine(line, key, value)) {
+            if (key == "alarm_count") {
+                int v = value.toInt(); if (v < 0) v = 0; if (v > max_alarms) v = max_alarms;
+                alarm_count = (uint8_t)v;
+                for (uint8_t i = 0; i < alarm_count; i++) alarms[i].active = true;
+            } else if (key == "timer_count") {
+                int v = value.toInt(); if (v < 0) v = 0; if (v > max_timers) v = max_timers;
+                timer_count = (uint8_t)v;
+                for (uint8_t i = 0; i < timer_count; i++) timers[i].active = true;
+            } else if (key.length() >= 4) {
+                // Parse "a<idx>_..." and "t<idx>_..."
+                char type = key[0];
+                int sep = key.indexOf('_');
+                if (sep > 1) {
+                    int idx = key.substring(1, sep).toInt();
+                    String field = key.substring(sep + 1);
+                    if (type == 'a' && idx >= 0 && idx < max_alarms) {
+                        if (field == "name") { strncpy(alarms[idx].name, value.c_str(), ALARM_NAME_LEN - 1); alarms[idx].name[ALARM_NAME_LEN - 1] = '\0'; }
+                        else if (field == "hour") alarms[idx].hour = (uint8_t)value.toInt();
+                        else if (field == "min") alarms[idx].minute = (uint8_t)value.toInt();
+                        else if (field == "en") alarms[idx].enabled = value.toInt() != 0;
+                    } else if (type == 't' && idx >= 0 && idx < max_timers) {
+                        if (field == "name") { strncpy(timers[idx].name, value.c_str(), ALARM_NAME_LEN - 1); timers[idx].name[ALARM_NAME_LEN - 1] = '\0'; }
+                        else if (field == "dur") timers[idx].duration_seconds = (uint32_t)value.toInt();
+                        else if (field == "start") timers[idx].start_unix_time = (uint32_t)value.toInt();
+                        else if (field == "run") timers[idx].running = value.toInt() != 0;
+                        else if (field == "item") timers[idx].linked_item_id = (uint16_t)value.toInt();
+                    }
+                }
+            }
+        }
+        start = end_pos + 1;
     }
     return true;
 }
