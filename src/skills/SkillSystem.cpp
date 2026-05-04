@@ -418,3 +418,44 @@ uint16_t SkillSystem::exportSkillsInCategorySnapshot(uint16_t category_id, char 
 
     return out_count;
 }
+
+uint16_t SkillSystem::exportCategoryTotalXP(char names[][MAX_SKILL_CATEGORY_NAME_LEN], float xp_values[], uint16_t max_items) const {
+    uint16_t out_count = 0;
+    uint32_t totals[MAX_SKILL_CATEGORIES] = {};
+    uint32_t max_xp = 1;
+    for (uint16_t i = 0; i < category_count && out_count < max_items; i++) {
+        if (!categories[i].active) continue;
+        uint32_t total = 0;
+        for (uint16_t j = 0; j < skill_count; j++) {
+            if (skills[j].active && skills[j].category_id == categories[i].id) {
+                total += skills[j].lifetime_xp;
+            }
+        }
+        totals[out_count] = total;
+        strncpy(names[out_count], categories[i].name, MAX_SKILL_CATEGORY_NAME_LEN - 1);
+        names[out_count][MAX_SKILL_CATEGORY_NAME_LEN - 1] = '\0';
+        if (total > max_xp) max_xp = total;
+        out_count++;
+    }
+    for (uint16_t i = 0; i < out_count; i++) {
+        xp_values[i] = (float)totals[i] / (float)max_xp * 100.0f;
+    }
+    return out_count;
+}
+
+uint16_t SkillSystem::exportSkillsInCategoryTotalXP(uint16_t category_id, char names[][MAX_SKILL_NAME_LEN], float xp_values[], uint16_t max_items) const {
+    uint16_t out_count = 0;
+    uint32_t max_xp = 1;
+    for (uint16_t i = 0; i < skill_count && out_count < max_items; i++) {
+        if (!skills[i].active || skills[i].category_id != category_id) continue;
+        if (skills[i].lifetime_xp > max_xp) max_xp = skills[i].lifetime_xp;
+    }
+    for (uint16_t i = 0; i < skill_count && out_count < max_items; i++) {
+        if (!skills[i].active || skills[i].category_id != category_id) continue;
+        strncpy(names[out_count], skills[i].name, MAX_SKILL_NAME_LEN - 1);
+        names[out_count][MAX_SKILL_NAME_LEN - 1] = '\0';
+        xp_values[out_count] = (float)skills[i].lifetime_xp / (float)max_xp * 100.0f;
+        out_count++;
+    }
+    return out_count;
+}

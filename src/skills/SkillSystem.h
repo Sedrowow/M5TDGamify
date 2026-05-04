@@ -14,9 +14,9 @@
 
 #define MIN_SKILL_LEVEL 1
 #define MAX_SKILL_LEVEL 999
-#define SKILL_BASE_XP_REQUIREMENT 2200U
+#define SKILL_BASE_XP_REQUIREMENT 500U
 #define SKILL_XP_GROWTH 1.18f
-#define DEFAULT_SKILL_XP_MULTIPLIER 0.25f
+#define DEFAULT_SKILL_XP_MULTIPLIER 0.50f
 
 struct SkillCategory {
     uint16_t id;
@@ -101,6 +101,10 @@ public:
     // Chart helpers for future UI web-chart/radar view.
     uint16_t exportCategorySnapshot(char names[][MAX_SKILL_CATEGORY_NAME_LEN], float levels[], uint16_t max_items) const;
     uint16_t exportSkillsInCategorySnapshot(uint16_t category_id, char names[][MAX_SKILL_NAME_LEN], float levels[], uint16_t max_items) const;
+
+    // Total (lifetime) XP based chart exports — for comparing cumulative XP.
+    uint16_t exportCategoryTotalXP(char names[][MAX_SKILL_CATEGORY_NAME_LEN], float xp_values[], uint16_t max_items) const;
+    uint16_t exportSkillsInCategoryTotalXP(uint16_t category_id, char names[][MAX_SKILL_NAME_LEN], float xp_values[], uint16_t max_items) const;
 };
 
 #endif

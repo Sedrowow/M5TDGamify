@@ -113,8 +113,15 @@ public:
     bool hasSavedSkills() const;
     bool clearSkillsSave();
 
+#include "../alarms/AlarmSystem.h"
+
     bool saveGlobalConfig(const GlobalSettings& cfg);
     bool loadGlobalConfig(GlobalSettings& cfg);
+
+    bool saveAlarmsAndTimers(const AlarmEntry alarms[], uint8_t alarm_count,
+                             const TimerEntry timers[], uint8_t timer_count);
+    bool loadAlarmsAndTimers(AlarmEntry alarms[], uint8_t& alarm_count, uint8_t max_alarms,
+                             TimerEntry timers[], uint8_t& timer_count, uint8_t max_timers);
 
     String getLastError() const { return last_error; }
 };
