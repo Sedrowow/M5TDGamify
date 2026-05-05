@@ -3873,6 +3873,7 @@ void renderUI() {
                 bool selected = (i == skill_quick_menu_index);
                 // Keep selection highlight even when row is disabled so the cursor stays visible
                 uint16_t row_bg = selected ? accent : bg;
+                // 0xC618 = RGB565 mid-grey — readable on accent background but visually muted
                 uint16_t row_fg = disabled ? (selected ? 0xC618 : muted) : (selected ? BLACK : text);
                 ui_canvas.fillRoundRect(24, 52 + i * 11, 192, 10, 2, row_bg);
                 ui_canvas.setTextColor(row_fg, row_bg);
