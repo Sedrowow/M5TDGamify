@@ -352,7 +352,11 @@ void generateMathQuizQuestion() {
         if (math_quiz_op == 0) {
             math_quiz_answer = (int64_t)math_quiz_a + math_quiz_b;
         } else {
-            if (math_quiz_b > math_quiz_a) { int32_t tmp = math_quiz_a; math_quiz_a = math_quiz_b; math_quiz_b = tmp; }
+            if (math_quiz_b > math_quiz_a) {
+                int32_t tmp = math_quiz_a;
+                math_quiz_a = math_quiz_b;
+                math_quiz_b = tmp;
+            }
             math_quiz_answer = (int64_t)math_quiz_a - math_quiz_b;
         }
     }
@@ -1120,7 +1124,7 @@ void cancelTextInput() {
     pending_task_id = 0;
     text_input_len = 0;
     text_input_buffer[0] = '\0';
-    // If cancelled during math quiz or alarm setup, also close overlay
+    // If cancelled during math quiz, also close the overlay
     if (overlay_mode == OVERLAY_MATH_QUIZ) overlay_mode = OVERLAY_NONE;
     setStatus("Input cancelled", 1200);
 }
@@ -1858,7 +1862,8 @@ void handleNavCommand(NavCommand cmd) {
     if (overlay_mode == OVERLAY_SKILL_FIELD_MENU) {
         // Category fields: 0=Rename Cat, 1=Add Category, 2=Add Skill, 3=Delete Cat
         // Skill fields:    0=Rename Skill, 1=Edit Details, 2=Add Skill, 3=Delete Skill
-        uint8_t field_count = skill_edit_is_category ? 4 : 4;
+        // Both contexts have 4 items
+        uint8_t field_count = 4;
         if (cmd == NAV_UP && skill_field_menu_index > 0) skill_field_menu_index--;
         else if (cmd == NAV_DOWN && skill_field_menu_index + 1 < field_count) skill_field_menu_index++;
         else if (cmd == NAV_SELECT) {
