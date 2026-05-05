@@ -68,7 +68,8 @@ enum TextInputPurpose {
     INPUT_RENAME_SKILL = 14,
     INPUT_EDIT_SKILL_DETAILS = 15,
     INPUT_ALARM_NAME = 16,
-    INPUT_TIMER_NAME = 17
+    INPUT_TIMER_NAME = 17,
+    INPUT_MATH_QUIZ_ANSWER = 18
 };
 
 enum NavCommand {
@@ -109,7 +110,17 @@ enum OverlayMode {
     OVERLAY_SHOP_CONFIRM_DELETE = 10,  // Y/N confirmation before removing item/recipe
     // Skill edit overlays
     OVERLAY_SKILL_FIELD_MENU = 11,      // field picker for category or skill
-    OVERLAY_SKILL_DELETE_CONFIRM = 12   // Y/N confirmation before removing cat/skill
+    OVERLAY_SKILL_DELETE_CONFIRM = 12,  // Y/N confirmation before removing cat/skill
+    // Skill quick-action menu (non-edit mode spacebar)
+    OVERLAY_SKILL_QUICK_MENU = 13,
+    // Skill XP edit stepper
+    OVERLAY_SKILL_XP_EDIT = 14,
+    // Main XP edit (guarded by math quiz)
+    OVERLAY_MATH_QUIZ = 15,
+    OVERLAY_MAIN_XP_EDIT = 16,
+    // Alarm/Timer detailed setup
+    OVERLAY_ALARM_SETUP = 17,
+    OVERLAY_TIMER_SETUP = 18
 };
 
 UiScreen current_screen = UI_DASHBOARD;
@@ -145,6 +156,21 @@ uint8_t skill_field_menu_index = 0;     // highlighted entry in skill field pick
 bool skill_delete_is_category = false;  // whether the pending delete is a category
 // Spider chart mode: 0=cat-level, 1=cat-totalXP, 2=skill-level, 3=skill-totalXP
 uint8_t skill_spider_mode = 0;
+// Skill quick-action menu (non-edit spacebar)
+uint8_t skill_quick_menu_index = 0;
+// Skill XP stepper state
+int32_t skill_xp_edit_value = 0;
+uint8_t skill_xp_edit_step_index = 2;
+uint16_t skill_xp_edit_skill_id = 0;   // 0 = main player XP
+// Math quiz state (guard for main XP edit)
+uint8_t math_quiz_question = 0;     // current question index 0-2
+int32_t math_quiz_a = 0;
+int32_t math_quiz_b = 0;
+uint8_t math_quiz_op = 0;           // 0=+, 1=-, 2=*
+int64_t math_quiz_answer = 0;
+// Alarm/timer detail setup overlay state
+uint8_t alarm_setup_entry_index = 0;
+uint8_t alarm_setup_field = 0;      // 0=name,1=hour,2=minute for alarm; 0=name,1=H,2=M,3=S for timer
 
 // Help overlay (H key toggles per-screen help)
 bool help_overlay_active = false;
@@ -308,6 +334,35 @@ void setStatus(const char* message, uint32_t ms = 2500) {
     status_line[sizeof(status_line) - 1] = '\0';
     status_line_until = millis() + ms;
     Serial.println(status_line);
+}
+
+// Generate a new math quiz question (up to 8-digit operands)
+void generateMathQuizQuestion() {
+    // op: 0=+, 1=-, 2=* (avoid multiplication for very large numbers)
+    math_quiz_op = (uint8_t)(esp_random() % 3);
+    if (math_quiz_op == 2) {
+        // multiplication: keep smaller to be solvable (up to 4 digits each)
+        math_quiz_a = (int32_t)(esp_random() % 9999) + 1;
+        math_quiz_b = (int32_t)(esp_random() % 9999) + 1;
+        math_quiz_answer = (int64_t)math_quiz_a * math_quiz_b;
+    } else {
+        // addition / subtraction: up to 8 digits
+        math_quiz_a = (int32_t)(esp_random() % 99999999) + 1;
+        math_quiz_b = (int32_t)(esp_random() % 99999999) + 1;
+        if (math_quiz_op == 0) {
+            math_quiz_answer = (int64_t)math_quiz_a + math_quiz_b;
+        } else {
+            if (math_quiz_b > math_quiz_a) {
+                int32_t tmp = math_quiz_a;
+                math_quiz_a = math_quiz_b;
+                math_quiz_b = tmp;
+            }
+            math_quiz_answer = (int64_t)math_quiz_a - math_quiz_b;
+        }
+    }
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Quiz %d/3", (int)math_quiz_question + 1);
+    setStatus(msg, 1000);
 }
 
 void triggerFeedback(FeedbackEvent ev) {
@@ -739,13 +794,14 @@ void drawSpiderSkillsTotalXP(int cx, int cy, int radius, uint16_t category_id) {
 }
 
 UiScreen indexToScreen(uint8_t idx) {
-    static const UiScreen screens[] = {UI_DASHBOARD, UI_TASKS, UI_SKILLS, UI_SHOP, UI_PROFILES, UI_INVENTORY, UI_SAVE_LOAD, UI_SETTINGS, UI_HELP, UI_ALARMS};
+    // Order: DASH, TASKS, SKILLS, SHOP, ALARMS, PROF, INV, SAVE, SETTINGS, HELP
+    static const UiScreen screens[] = {UI_DASHBOARD, UI_TASKS, UI_SKILLS, UI_SHOP, UI_ALARMS, UI_PROFILES, UI_INVENTORY, UI_SAVE_LOAD, UI_SETTINGS, UI_HELP};
     if (idx < SCREEN_SELECTOR_COUNT) return screens[idx];
     return UI_DASHBOARD;
 }
 
 uint8_t screenToIndex(UiScreen screen) {
-    static const UiScreen screens[] = {UI_DASHBOARD, UI_TASKS, UI_SKILLS, UI_SHOP, UI_PROFILES, UI_INVENTORY, UI_SAVE_LOAD, UI_SETTINGS, UI_HELP, UI_ALARMS};
+    static const UiScreen screens[] = {UI_DASHBOARD, UI_TASKS, UI_SKILLS, UI_SHOP, UI_ALARMS, UI_PROFILES, UI_INVENTORY, UI_SAVE_LOAD, UI_SETTINGS, UI_HELP};
     for (uint8_t i = 0; i < SCREEN_SELECTOR_COUNT; i++) {
         if (screens[i] == screen) return i;
     }
@@ -753,7 +809,7 @@ uint8_t screenToIndex(UiScreen screen) {
 }
 
 const char* indexToScreenName(uint8_t idx) {
-    static const char* names[] = {"DASH", "TASKS", "SKILLS", "SHOP", "PROF", "INV", "SAVE", "SETTINGS", "HELP", "ALARMS"};
+    static const char* names[] = {"DASH", "TASKS", "SKILLS", "SHOP", "ALARMS", "PROF", "INV", "SAVE", "SETTINGS", "HELP"};
     if (idx < SCREEN_SELECTOR_COUNT) return names[idx];
     return "DASH";
 }
@@ -762,7 +818,7 @@ static const char* sett_sub_names[7] = {"WiFi", "Timezone", "Time", "Health", "R
 
 uint8_t getSelectorSubCount(uint8_t screen_idx) {
     if (screen_idx == 2) return (uint8_t)skill_system.getActiveCategoryCount(); // SKILLS
-    if (screen_idx == 7) return 7; // SETTINGS
+    if (screen_idx == 8) return 7; // SETTINGS (index 8 in new order)
     return 0;
 }
 
@@ -771,7 +827,7 @@ const char* getSelectorSubName(uint8_t screen_idx, uint8_t sub_idx) {
         const SkillCategory* cat = skill_system.getCategoryByActiveIndex(sub_idx);
         return cat ? cat->name : "?";
     }
-    if (screen_idx == 7 && sub_idx < 7) return sett_sub_names[sub_idx];
+    if (screen_idx == 8 && sub_idx < 7) return sett_sub_names[sub_idx];
     return "?";
 }
 
@@ -1068,6 +1124,8 @@ void cancelTextInput() {
     pending_task_id = 0;
     text_input_len = 0;
     text_input_buffer[0] = '\0';
+    // If cancelled during math quiz, also close the overlay
+    if (overlay_mode == OVERLAY_MATH_QUIZ) overlay_mode = OVERLAY_NONE;
     setStatus("Input cancelled", 1200);
 }
 
@@ -1190,23 +1248,6 @@ void finishTextInput() {
                 setStatus("WiFi connect failed");
             }
         }
-    } else if (input_purpose == INPUT_ALARM_NAME) {
-        // pending_task_id holds alarm slot index
-        uint8_t idx = (uint8_t)pending_task_id;
-        if (idx < alarm_count) {
-            strncpy(alarm_entries[idx].name, text_input_buffer, ALARM_NAME_LEN - 1);
-            alarm_entries[idx].name[ALARM_NAME_LEN - 1] = '\0';
-            save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
-            setStatus("Alarm saved");
-        }
-    } else if (input_purpose == INPUT_TIMER_NAME) {
-        uint8_t idx = (uint8_t)pending_task_id;
-        if (idx < timer_count) {
-            strncpy(timer_entries[idx].name, text_input_buffer, ALARM_NAME_LEN - 1);
-            timer_entries[idx].name[ALARM_NAME_LEN - 1] = '\0';
-            save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
-            setStatus("Timer saved");
-        }
     } else if (input_purpose == INPUT_MANUAL_TIME) {
         // time_input_buffer holds "HH:MM:SS DD/MM/YY" — already applied via sett_time_vals
         setStatus("Time set");
@@ -1233,6 +1274,67 @@ void finishTextInput() {
             sk->details[MAX_SKILL_DETAILS_LEN - 1] = '\0';
             saveSkills();
             setStatus("Skill details updated");
+        }
+    } else if (input_purpose == INPUT_MATH_QUIZ_ANSWER) {
+        // Parse user answer
+        int64_t user_ans = (int64_t)atoll(text_input_buffer);
+        text_input_active = false;
+        input_purpose = INPUT_NONE;
+        if (user_ans == math_quiz_answer) {
+            math_quiz_question++;
+            if (math_quiz_question >= 3) {
+                // Passed all 3 questions
+                setStatus("Quiz passed! Edit main XP.", 1500);
+                skill_xp_edit_value = 0;
+                skill_xp_edit_step_index = 2;
+                skill_xp_edit_skill_id = 0;
+                overlay_mode = OVERLAY_MAIN_XP_EDIT;
+            } else {
+                // Next question — restart input
+                generateMathQuizQuestion();
+                beginTextInput(INPUT_MATH_QUIZ_ANSWER);  // re-enables text_input_active
+                overlay_mode = OVERLAY_MATH_QUIZ;
+            }
+        } else {
+            setStatus("Wrong! Access denied.", 2000);
+            overlay_mode = OVERLAY_NONE;
+        }
+        normalizeSkillSelection();
+        normalizeTaskSelection();
+        normalizeShopSelection();
+        return;  // early return to avoid resetting overlay_mode below
+    } else if (input_purpose == INPUT_ALARM_NAME) {
+        // pending_task_id holds alarm slot index
+        uint8_t idx = (uint8_t)pending_task_id;
+        if (idx < alarm_count) {
+            strncpy(alarm_entries[idx].name, text_input_buffer, ALARM_NAME_LEN - 1);
+            alarm_entries[idx].name[ALARM_NAME_LEN - 1] = '\0';
+            save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
+            setStatus("Alarm name saved");
+        }
+        // Reopen alarm setup overlay if we were editing from it
+        if (alarm_setup_entry_index == idx) {
+            text_input_active = false;
+            input_purpose = INPUT_NONE;
+            overlay_mode = OVERLAY_ALARM_SETUP;
+            normalizeSkillSelection(); normalizeTaskSelection(); normalizeShopSelection();
+            return;
+        }
+    } else if (input_purpose == INPUT_TIMER_NAME) {
+        uint8_t idx = (uint8_t)pending_task_id;
+        if (idx < timer_count) {
+            strncpy(timer_entries[idx].name, text_input_buffer, ALARM_NAME_LEN - 1);
+            timer_entries[idx].name[ALARM_NAME_LEN - 1] = '\0';
+            save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
+            setStatus("Timer name saved");
+        }
+        // Reopen timer setup overlay if we were editing from it
+        if (alarm_setup_entry_index == idx) {
+            text_input_active = false;
+            input_purpose = INPUT_NONE;
+            overlay_mode = OVERLAY_TIMER_SETUP;
+            normalizeSkillSelection(); normalizeTaskSelection(); normalizeShopSelection();
+            return;
         }
     }
 
@@ -1659,6 +1761,9 @@ void cycleScreen(int8_t delta) {
 }
 
 void handleNavCommand(NavCommand cmd) {
+    // Block nav input while text input is active (e.g. during math quiz)
+    if (text_input_active && overlay_mode == OVERLAY_MATH_QUIZ) return;
+
     // Screen selector mode (scrollable vertical list)
     if (screen_selector_active) {
         if (screen_selector_sub_active) {
@@ -1675,7 +1780,7 @@ void handleNavCommand(NavCommand cmd) {
                 if (screen_selector_index == 2 && sub_count > 0) { // SKILLS
                     selected_category_index = screen_selector_sub_index;
                     selected_skill_index = 0;
-                } else if (screen_selector_index == 7) { // SETTINGS
+                } else if (screen_selector_index == 8) { // SETTINGS (index 8 in new order)
                     sett_section = (SettingsSection)screen_selector_sub_index;
                 }
                 const char* sub_name = getSelectorSubName(screen_selector_index, screen_selector_sub_index);
@@ -1754,11 +1859,235 @@ void handleNavCommand(NavCommand cmd) {
         return;
     }
 
+    if (overlay_mode == OVERLAY_SKILL_FIELD_MENU) {
+        // Category fields: 0=Rename Cat, 1=Add Category, 2=Add Skill, 3=Delete Cat
+        // Skill fields:    0=Rename Skill, 1=Edit Details, 2=Add Skill, 3=Delete Skill
+        // Both contexts have 4 items
+        uint8_t field_count = 4;
+        if (cmd == NAV_UP && skill_field_menu_index > 0) skill_field_menu_index--;
+        else if (cmd == NAV_DOWN && skill_field_menu_index + 1 < field_count) skill_field_menu_index++;
+        else if (cmd == NAV_SELECT) {
+            overlay_mode = OVERLAY_NONE;
+            const SkillCategory* cat = selectedCategory();
+            const Skill* sk = selectedSkillInSelectedCategory();
+            if (skill_edit_is_category) {
+                if (skill_field_menu_index == 0 && cat) {
+                    beginTextInput(INPUT_RENAME_CATEGORY, cat->id);
+                } else if (skill_field_menu_index == 1) {
+                    beginTextInput(INPUT_ADD_CATEGORY);
+                } else if (skill_field_menu_index == 2 && cat) {
+                    beginTextInput(INPUT_ADD_SKILL, cat->id);
+                } else if (skill_field_menu_index == 3 && cat) {
+                    skill_delete_is_category = true;
+                    profile_delete_confirm_until = millis() + 5000;
+                    overlay_mode = OVERLAY_SKILL_DELETE_CONFIRM;
+                }
+            } else {
+                if (skill_field_menu_index == 0 && sk) {
+                    beginTextInput(INPUT_RENAME_SKILL, sk->id);
+                } else if (skill_field_menu_index == 1 && sk) {
+                    beginTextInput(INPUT_EDIT_SKILL_DETAILS, sk->id);
+                } else if (skill_field_menu_index == 2 && cat) {
+                    beginTextInput(INPUT_ADD_SKILL, cat->id);
+                } else if (skill_field_menu_index == 3 && sk) {
+                    skill_delete_is_category = false;
+                    profile_delete_confirm_until = millis() + 5000;
+                    overlay_mode = OVERLAY_SKILL_DELETE_CONFIRM;
+                }
+            }
+        } else if (cmd == NAV_BACK) {
+            overlay_mode = OVERLAY_NONE;
+        }
+        return;
+    }
+
     if (overlay_mode == OVERLAY_SKILL_DELETE_CONFIRM) {
         if (cmd == NAV_BACK) {
             overlay_mode = OVERLAY_NONE;
             setStatus("Delete cancelled", 1000);
         }
+        return;
+    }
+
+    if (overlay_mode == OVERLAY_SKILL_QUICK_MENU) {
+        // Build available items list dynamically
+        // 0=Add Category, 1=Add Skill (if cat), 2=Edit Skill XP (if skill), 3=Edit Main XP, 4=Cycle Chart
+        const SkillCategory* cat = selectedCategory();
+        const Skill* sk = selectedSkillInSelectedCategory();
+        uint8_t item_count = 5;  // always 5 items; some may be greyed
+        if (cmd == NAV_UP && skill_quick_menu_index > 0) skill_quick_menu_index--;
+        else if (cmd == NAV_DOWN && skill_quick_menu_index + 1 < item_count) skill_quick_menu_index++;
+        else if (cmd == NAV_SELECT) {
+            overlay_mode = OVERLAY_NONE;
+            if (skill_quick_menu_index == 0) {
+                beginTextInput(INPUT_ADD_CATEGORY);
+            } else if (skill_quick_menu_index == 1) {
+                if (cat) beginTextInput(INPUT_ADD_SKILL, cat->id);
+                else setStatus("No category selected");
+            } else if (skill_quick_menu_index == 2) {
+                if (sk) {
+                    skill_xp_edit_skill_id = sk->id;
+                    skill_xp_edit_value = 0;
+                    skill_xp_edit_step_index = 2;
+                    overlay_mode = OVERLAY_SKILL_XP_EDIT;
+                } else {
+                    setStatus("No skill selected");
+                }
+            } else if (skill_quick_menu_index == 3) {
+                // Start math quiz
+                math_quiz_question = 0;
+                generateMathQuizQuestion();
+                beginTextInput(INPUT_MATH_QUIZ_ANSWER);
+                overlay_mode = OVERLAY_MATH_QUIZ;
+            } else if (skill_quick_menu_index == 4) {
+                skill_spider_mode = (skill_spider_mode + 1) % 4;
+                static const char* chart_names[] = {
+                    "Chart: cat level", "Chart: cat total XP",
+                    "Chart: skill level", "Chart: skill total XP"
+                };
+                setStatus(chart_names[skill_spider_mode], 1000);
+            }
+        } else if (cmd == NAV_BACK) {
+            overlay_mode = OVERLAY_NONE;
+        }
+        return;
+    }
+
+    if (overlay_mode == OVERLAY_SKILL_XP_EDIT) {
+        static const int32_t xp_steps[5] = {1, 10, 100, 1000, 10000};
+        int32_t step = xp_steps[skill_xp_edit_step_index];
+        if (cmd == NAV_UP) skill_xp_edit_value += step;
+        else if (cmd == NAV_DOWN) skill_xp_edit_value -= step;
+        else if (cmd == NAV_LEFT && skill_xp_edit_step_index > 0) skill_xp_edit_step_index--;
+        else if (cmd == NAV_RIGHT && skill_xp_edit_step_index < 4) skill_xp_edit_step_index++;
+        else if (cmd == NAV_SELECT) {
+            if (skill_xp_edit_skill_id > 0) {
+                Skill* sk = skill_system.getSkill(skill_xp_edit_skill_id);
+                if (sk) {
+                    if (skill_xp_edit_value >= 0) {
+                        skill_system.addXPToSkill(sk->id, (uint32_t)skill_xp_edit_value);
+                    } else {
+                        uint32_t remove_amt = (uint32_t)(-skill_xp_edit_value);
+                        sk->current_xp = (sk->current_xp >= remove_amt) ? sk->current_xp - remove_amt : 0;
+                        // Recompute level by resetting and re-adding total remaining XP
+                        uint32_t remaining = sk->current_xp;
+                        sk->level = 1;
+                        sk->current_xp = 0;
+                        if (remaining > 0) skill_system.addXPToSkill(sk->id, remaining);
+                    }
+                    saveSkills();
+                    setStatus("Skill XP updated");
+                }
+            }
+            overlay_mode = OVERLAY_NONE;
+        } else if (cmd == NAV_BACK) {
+            overlay_mode = OVERLAY_NONE;
+        }
+        return;
+    }
+
+    if (overlay_mode == OVERLAY_MAIN_XP_EDIT) {
+        static const int32_t mxp_steps[5] = {1, 10, 100, 1000, 10000};
+        int32_t step = mxp_steps[skill_xp_edit_step_index];
+        if (cmd == NAV_UP) skill_xp_edit_value += step;
+        else if (cmd == NAV_DOWN) skill_xp_edit_value -= step;
+        else if (cmd == NAV_LEFT && skill_xp_edit_step_index > 0) skill_xp_edit_step_index--;
+        else if (cmd == NAV_RIGHT && skill_xp_edit_step_index < 4) skill_xp_edit_step_index++;
+        else if (cmd == NAV_SELECT) {
+            if (skill_xp_edit_value >= 0) {
+                level_system.addXP((uint32_t)skill_xp_edit_value);
+            } else {
+                uint32_t remove_amt = (uint32_t)(-skill_xp_edit_value);
+                uint32_t cur_xp = level_system.getCurrentXP();
+                level_system.setCurrentXP(cur_xp >= remove_amt ? cur_xp - remove_amt : 0);
+            }
+            hud_levelup_pending = 0;
+            hud_display_level = level_system.getLevel();
+            hud_level_anim = (float)level_system.getXPProgress();
+            saveAllProfileData();
+            setStatus("Main XP updated");
+            overlay_mode = OVERLAY_NONE;
+        } else if (cmd == NAV_BACK) {
+            overlay_mode = OVERLAY_NONE;
+        }
+        return;
+    }
+
+    if (overlay_mode == OVERLAY_MATH_QUIZ) {
+        // handled in handleKeyInput/finishTextInput
+        return;
+    }
+
+    if (overlay_mode == OVERLAY_ALARM_SETUP) {
+        if (alarm_setup_entry_index >= alarm_count) { overlay_mode = OVERLAY_NONE; return; }
+        AlarmEntry& ae = alarm_entries[alarm_setup_entry_index];
+        // Fields: 0=Name, 1=Hour, 2=Minute, 3=Enabled
+        if (cmd == NAV_UP) {
+            if (alarm_setup_field == 1) ae.hour = (ae.hour + 23) % 24;
+            else if (alarm_setup_field == 2) ae.minute = (ae.minute + 59) % 60;
+            else if (alarm_setup_field == 3) ae.enabled = !ae.enabled;
+        } else if (cmd == NAV_DOWN) {
+            if (alarm_setup_field == 1) ae.hour = (ae.hour + 1) % 24;
+            else if (alarm_setup_field == 2) ae.minute = (ae.minute + 1) % 60;
+            else if (alarm_setup_field == 3) ae.enabled = !ae.enabled;
+        } else if (cmd == NAV_LEFT && alarm_setup_field > 0) {
+            alarm_setup_field--;
+        } else if (cmd == NAV_RIGHT && alarm_setup_field < 3) {
+            alarm_setup_field++;
+        } else if (cmd == NAV_SELECT) {
+            if (alarm_setup_field == 0) {
+                beginTextInput(INPUT_ALARM_NAME, alarm_setup_entry_index);
+                overlay_mode = OVERLAY_ALARM_SETUP;  // reopen after input
+            } else {
+                save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
+                setStatus("Alarm saved", 800);
+                overlay_mode = OVERLAY_NONE;
+            }
+        } else if (cmd == NAV_BACK) {
+            save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
+            overlay_mode = OVERLAY_NONE;
+        }
+        return;
+    }
+
+    if (overlay_mode == OVERLAY_TIMER_SETUP) {
+        if (alarm_setup_entry_index >= timer_count) { overlay_mode = OVERLAY_NONE; return; }
+        TimerEntry& te = timer_entries[alarm_setup_entry_index];
+        uint32_t h = te.duration_seconds / 3600;
+        uint32_t m = (te.duration_seconds % 3600) / 60;
+        uint32_t s = te.duration_seconds % 60;
+        // Fields: 0=Name, 1=Hours, 2=Minutes, 3=Seconds
+        bool changed = false;
+        if (cmd == NAV_UP) {
+            if (alarm_setup_field == 1) { if (h < 99) { h++; changed = true; } }
+            else if (alarm_setup_field == 2) { if (m < 59) m++; else { m = 0; if (h < 99) h++; } changed = true; }
+            else if (alarm_setup_field == 3) { if (s < 59) s++; else { s = 0; if (m < 59) m++; else { m = 0; if (h < 99) h++; } } changed = true; }
+        } else if (cmd == NAV_DOWN) {
+            if (alarm_setup_field == 1) { if (h > 0) { h--; changed = true; } }
+            else if (alarm_setup_field == 2) { if (m > 0) m--; else { m = 59; if (h > 0) h--; } changed = true; }
+            else if (alarm_setup_field == 3) { if (s > 0) s--; else { s = 59; if (m > 0) m--; else { m = 59; if (h > 0) h--; } } changed = true; }
+        } else if (cmd == NAV_LEFT && alarm_setup_field > 0) {
+            alarm_setup_field--;
+        } else if (cmd == NAV_RIGHT && alarm_setup_field < 3) {
+            alarm_setup_field++;
+        } else if (cmd == NAV_SELECT) {
+            if (alarm_setup_field == 0) {
+                beginTextInput(INPUT_TIMER_NAME, alarm_setup_entry_index);
+                overlay_mode = OVERLAY_TIMER_SETUP;
+            } else {
+                te.duration_seconds = h * 3600 + m * 60 + s;
+                save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
+                setStatus("Timer saved", 800);
+                overlay_mode = OVERLAY_NONE;
+            }
+            return;
+        } else if (cmd == NAV_BACK) {
+            te.duration_seconds = h * 3600 + m * 60 + s;
+            save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
+            overlay_mode = OVERLAY_NONE;
+            return;
+        }
+        if (changed) te.duration_seconds = h * 3600 + m * 60 + s;
         return;
     }
 
@@ -2783,6 +3112,16 @@ void handleKeyInput(char key) {
         return;
     }
 
+    // 'L' key activates manual health input mode (globally, except in text input)
+    if (key == 'l' || key == 'L') {
+        overlay_mode = OVERLAY_NONE;
+        manual_health_active = true;
+        manual_health_input_percent = (uint8_t)health_system.getHealth();
+        manual_health_last_input_time = millis();
+        setStatus("Health mode: 1-0 set%, -/= adjust, ENT confirm", 2000);
+        return;
+    }
+
     switch (current_screen) {
         case UI_DASHBOARD:
             if (key == 'f' || key == 'F') {
@@ -2848,18 +3187,9 @@ void handleKeyInput(char key) {
                 if (cat) overlay_mode = OVERLAY_SKILL_FIELD_MENU;
                 else setStatus("No category selected");
             } else if (!skill_edit_mode && key == ' ') {
-                // Cycle through 4 spider chart modes
-                skill_spider_mode = (skill_spider_mode + 1) % 4;
-                static const char* chart_names[] = {
-                    "Chart: cat level", "Chart: cat total XP",
-                    "Chart: skill level", "Chart: skill total XP"
-                };
-                setStatus(chart_names[skill_spider_mode], 1000);
-            } else if (key == 'a' || key == 'A') {
-                beginTextInput(INPUT_ADD_CATEGORY);
-            } else if (key == 'k' || key == 'K') {
-                const SkillCategory* cat = selectedCategory();
-                if (cat) beginTextInput(INPUT_ADD_SKILL, cat->id);
+                // Open quick-action menu
+                skill_quick_menu_index = 0;
+                overlay_mode = OVERLAY_SKILL_QUICK_MENU;
             }
             break;
 
@@ -2970,10 +3300,18 @@ void handleKeyInput(char key) {
                         alarm_entries[alarm_count].minute = alarm_add_minute;
                         alarm_count++;
                         save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
-                        beginTextInput(INPUT_ALARM_NAME, alarm_edit_index);
+                        // Open detailed setup overlay for the new alarm
+                        alarm_setup_entry_index = alarm_count - 1;
+                        alarm_setup_field = 0;
+                        overlay_mode = OVERLAY_ALARM_SETUP;
                     } else {
                         setStatus("Max alarms reached");
                     }
+                } else if (key == ' ' && alarm_sel_index < alarm_count) {
+                    // Open detailed alarm setup screen
+                    alarm_setup_entry_index = alarm_sel_index;
+                    alarm_setup_field = 0;
+                    overlay_mode = OVERLAY_ALARM_SETUP;
                 } else if ((key == '+' || key == '=') && alarm_sel_index < alarm_count) {
                     alarm_entries[alarm_sel_index].minute++;
                     if (alarm_entries[alarm_sel_index].minute >= 60) { alarm_entries[alarm_sel_index].minute = 0; alarm_entries[alarm_sel_index].hour = (alarm_entries[alarm_sel_index].hour + 1) % 24; }
@@ -2994,10 +3332,18 @@ void handleKeyInput(char key) {
                         alarm_edit_index = timer_count;
                         timer_count++;
                         save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
-                        beginTextInput(INPUT_TIMER_NAME, alarm_edit_index);
+                        // Open detailed setup overlay for the new timer
+                        alarm_setup_entry_index = timer_count - 1;
+                        alarm_setup_field = 0;
+                        overlay_mode = OVERLAY_TIMER_SETUP;
                     } else {
                         setStatus("Max timers reached");
                     }
+                } else if (key == ' ' && timer_sel_index < timer_count) {
+                    // Open detailed timer setup screen
+                    alarm_setup_entry_index = timer_sel_index;
+                    alarm_setup_field = 0;
+                    overlay_mode = OVERLAY_TIMER_SETUP;
                 } else if ((key == '+' || key == '=') && timer_sel_index < timer_count) {
                     timer_entries[timer_sel_index].duration_seconds += 60;
                     save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
@@ -3150,12 +3496,12 @@ void renderUI() {
     } else if (text_input_active) {
         scroll_text += "Type text  DEL:Erase  ENT:Save  `:Cancel  TAB:Menu";
     } else if (current_screen == UI_DASHBOARD) {
-        scroll_text += ";/.:Task  ENT:Done  TAB:Menu  G0:Screen  G:Saver  H:Health  [:Dim  ]:Bright";
+        scroll_text += ";/.:Task  ENT:Done  TAB:Menu  G0:Screen  G:Saver  L:Health  [:Dim  ]:Bright";
     } else if (current_screen == UI_TASKS) {
         if (task_edit_mode) scroll_text += ",/:Field  ;/.:Value  SPC:Detail  ENT:Save  E:ExitEdit  TAB:Menu";
         else scroll_text += ";/.:Select  ENT:Done  E:Edit  N:New  D:Delete  T:Details  TAB:Menu";
     } else if (current_screen == UI_SKILLS) {
-        scroll_text += ",/:Category  ;/.:Skill  A:AddCat  K:AddSkill  X:DelSkill  D:DelCat  TAB:Menu";
+        scroll_text += ",/:Category  ;/.:Skill  E:Edit  SPC:Menu(AddCat/AddSkill/XP/Chart)  TAB:Menu";
     } else if (current_screen == UI_SHOP) {
         scroll_text += ";/.:Select  ,/:Focus  ENT:BuyCraft  Z:Setup  N:Add  R:Recipe  TAB:Menu";
     } else if (current_screen == UI_PROFILES) {
@@ -3168,7 +3514,7 @@ void renderUI() {
     } else if (current_screen == UI_HELP) {
         scroll_text += "Read guide  H:Close help overlay  TAB:Menu";
     } else if (current_screen == UI_ALARMS) {
-        scroll_text += "LEFT:Alarms/Timers  ;/.:Select  ENT:Toggle  DEL:Remove  A:Add alarm  T:Add timer  +/-:Adjust  TAB:Menu";
+        scroll_text += "LEFT:Alarms/Timers  ;/.:Select  ENT:Toggle  DEL:Remove  A:Add  T:Add timer  SPC:Setup  TAB:Menu";
     }
     const int scroll_origin_x = 60;  // keep left quarter free for money
     int text_px = (int)scroll_text.length() * 6;
@@ -3448,12 +3794,12 @@ void renderUI() {
             ui_canvas.setCursor(24, 78);
             ui_canvas.printf("Y = yes   N = no (%lus)", (unsigned long)remain);
         } else if (overlay_mode == OVERLAY_SKILL_FIELD_MENU) {
-            // Category fields: Rename Cat / Add Skill / Delete Cat
+            // Category fields: Rename Cat / Add Category / Add Skill / Delete Cat
             // Skill fields:    Rename Skill / Edit Details / Add Skill / Delete Skill
-            static const char* cat_fields[3]  = {"Rename Category", "Add Skill", "Delete Category"};
+            static const char* cat_fields[4]  = {"Rename Category", "Add Category", "Add Skill", "Delete Category"};
             static const char* sk_fields[4]   = {"Rename Skill", "Edit Details", "Add Skill", "Delete Skill"};
             const char** fields = skill_edit_is_category ? cat_fields : sk_fields;
-            uint8_t field_count = skill_edit_is_category ? 3 : 4;
+            uint8_t field_count = 4;
             ui_canvas.setCursor(24, 40);
             ui_canvas.println(skill_edit_is_category ? "CATEGORY EDIT" : "SKILL EDIT");
             for (uint8_t i = 0; i < field_count; i++) {
@@ -3486,6 +3832,121 @@ void renderUI() {
             ui_canvas.setTextColor(muted, panel);
             ui_canvas.setCursor(24, 78);
             ui_canvas.printf("Y = yes   N = no (%lus)", (unsigned long)remain);
+        } else if (overlay_mode == OVERLAY_SKILL_QUICK_MENU) {
+            const SkillCategory* qcat = selectedCategory();
+            const Skill* qsk = selectedSkillInSelectedCategory();
+            static const char* qitems[5] = {"Add Category", "Add Skill", "Edit Skill XP", "Edit Main XP", "Cycle Spider Chart"};
+            ui_canvas.setCursor(24, 40);
+            ui_canvas.println("SKILLS QUICK MENU");
+            for (uint8_t i = 0; i < 5; i++) {
+                bool disabled = (i == 1 && !qcat) || (i == 2 && !qsk);
+                uint16_t row_bg = (i == skill_quick_menu_index && !disabled) ? accent : bg;
+                uint16_t row_fg = disabled ? muted : ((i == skill_quick_menu_index) ? BLACK : text);
+                ui_canvas.fillRoundRect(24, 52 + i * 11, 192, 10, 2, row_bg);
+                ui_canvas.setTextColor(row_fg, row_bg);
+                ui_canvas.setCursor(28, 53 + i * 11);
+                ui_canvas.print(qitems[i]);
+            }
+            ui_canvas.setTextColor(muted, panel);
+            ui_canvas.setCursor(24, 110);
+            ui_canvas.println(";/.:move  ENT:select  `:back");
+        } else if (overlay_mode == OVERLAY_SKILL_XP_EDIT) {
+            const Skill* xpsk = skill_system.getSkill(skill_xp_edit_skill_id);
+            static const int32_t xp_steps[5] = {1, 10, 100, 1000, 10000};
+            ui_canvas.setCursor(24, 40);
+            ui_canvas.printf("EDIT SKILL XP: %s", xpsk ? truncateUiText(xpsk->name, 14).c_str() : "?");
+            ui_canvas.setTextColor(skill_xp_edit_value >= 0 ? 0x07E0 : 0xF800, panel);
+            ui_canvas.setTextSize(2);
+            ui_canvas.setCursor(32, 62);
+            ui_canvas.printf("%+ld", (long)skill_xp_edit_value);
+            ui_canvas.setTextSize(1);
+            ui_canvas.setTextColor(muted, panel);
+            ui_canvas.setCursor(32, 90);
+            ui_canvas.printf("Step: %ld", (long)xp_steps[skill_xp_edit_step_index]);
+            if (xpsk) { ui_canvas.setCursor(32, 100); ui_canvas.printf("Current: %lu XP Lv%d", (unsigned long)xpsk->current_xp, xpsk->level); }
+            ui_canvas.setCursor(24, 110);
+            ui_canvas.println(";/.:amount  ,/:step  ENT:apply");
+        } else if (overlay_mode == OVERLAY_MAIN_XP_EDIT) {
+            static const int32_t mxp_steps[5] = {1, 10, 100, 1000, 10000};
+            ui_canvas.setCursor(24, 40);
+            ui_canvas.println("EDIT MAIN XP");
+            ui_canvas.setTextColor(skill_xp_edit_value >= 0 ? 0x07E0 : 0xF800, panel);
+            ui_canvas.setTextSize(2);
+            ui_canvas.setCursor(32, 62);
+            ui_canvas.printf("%+ld", (long)skill_xp_edit_value);
+            ui_canvas.setTextSize(1);
+            ui_canvas.setTextColor(muted, panel);
+            ui_canvas.setCursor(32, 90);
+            ui_canvas.printf("Step: %ld", (long)mxp_steps[skill_xp_edit_step_index]);
+            ui_canvas.setCursor(32, 100);
+            ui_canvas.printf("Cur XP: %lu  Lv%d", (unsigned long)level_system.getCurrentXP(), level_system.getLevel());
+            ui_canvas.setCursor(24, 110);
+            ui_canvas.println(";/.:amount  ,/:step  ENT:apply");
+        } else if (overlay_mode == OVERLAY_MATH_QUIZ) {
+            static const char* op_chars[3] = {"+", "-", "*"};
+            ui_canvas.setCursor(24, 36);
+            ui_canvas.setTextColor(yellow, panel);
+            ui_canvas.printf("MATH QUIZ %d/3 - Type the answer:", (int)math_quiz_question + 1);
+            ui_canvas.setTextColor(text, panel);
+            ui_canvas.setTextSize(2);
+            ui_canvas.setCursor(28, 56);
+            ui_canvas.printf("%ld %s %ld = ?", (long)math_quiz_a, op_chars[math_quiz_op], (long)math_quiz_b);
+            ui_canvas.setTextSize(1);
+            ui_canvas.fillRoundRect(28, 84, 184, 14, 3, bg);
+            ui_canvas.setCursor(32, 87);
+            ui_canvas.setTextColor(text, bg);
+            ui_canvas.println(text_input_buffer);
+            ui_canvas.setTextColor(muted, panel);
+            ui_canvas.setCursor(24, 106);
+            ui_canvas.println("Type answer  ENT:confirm  `:cancel");
+        } else if (overlay_mode == OVERLAY_ALARM_SETUP) {
+            if (alarm_setup_entry_index < alarm_count) {
+                AlarmEntry& ae = alarm_entries[alarm_setup_entry_index];
+                ui_canvas.setCursor(24, 40);
+                ui_canvas.printf("ALARM SETUP (#%d)", alarm_setup_entry_index + 1);
+                static const char* af_names[4] = {"Name", "Hour", "Minute", "Enabled"};
+                static const char* af_hints[4] = {"ENT:edit name", ";/.:change", ";/.:change", ";/.:toggle"};
+                ui_canvas.setTextColor(text, panel);
+                for (uint8_t i = 0; i < 4; i++) {
+                    uint16_t rbg = (i == alarm_setup_field) ? accent : bg;
+                    uint16_t rfg = (i == alarm_setup_field) ? BLACK : text;
+                    ui_canvas.fillRoundRect(24, 54 + i * 14, 192, 12, 2, rbg);
+                    ui_canvas.setTextColor(rfg, rbg);
+                    ui_canvas.setCursor(28, 56 + i * 14);
+                    if (i == 0) ui_canvas.printf("Name: %.16s", ae.name[0] ? ae.name : "(none)");
+                    else if (i == 1) ui_canvas.printf("Hour: %02d", ae.hour);
+                    else if (i == 2) ui_canvas.printf("Minute: %02d", ae.minute);
+                    else ui_canvas.printf("Enabled: %s", ae.enabled ? "YES" : "NO");
+                }
+                ui_canvas.setTextColor(muted, panel);
+                ui_canvas.setCursor(24, 110);
+                ui_canvas.printf("%s  ,/:field  `:save", af_hints[alarm_setup_field]);
+            }
+        } else if (overlay_mode == OVERLAY_TIMER_SETUP) {
+            if (alarm_setup_entry_index < timer_count) {
+                TimerEntry& te = timer_entries[alarm_setup_entry_index];
+                uint32_t th = te.duration_seconds / 3600;
+                uint32_t tm2 = (te.duration_seconds % 3600) / 60;
+                uint32_t ts2 = te.duration_seconds % 60;
+                ui_canvas.setCursor(24, 40);
+                ui_canvas.printf("TIMER SETUP (#%d)", alarm_setup_entry_index + 1);
+                static const char* tf_names[4] = {"Name", "Hours", "Minutes", "Seconds"};
+                static const char* tf_hints[4] = {"ENT:edit name", ";/.:change", ";/.:change", ";/.:change"};
+                for (uint8_t i = 0; i < 4; i++) {
+                    uint16_t rbg = (i == alarm_setup_field) ? accent : bg;
+                    uint16_t rfg = (i == alarm_setup_field) ? BLACK : text;
+                    ui_canvas.fillRoundRect(24, 54 + i * 14, 192, 12, 2, rbg);
+                    ui_canvas.setTextColor(rfg, rbg);
+                    ui_canvas.setCursor(28, 56 + i * 14);
+                    if (i == 0) ui_canvas.printf("Name: %.16s", te.name[0] ? te.name : "(none)");
+                    else if (i == 1) ui_canvas.printf("Hours: %02lu", (unsigned long)th);
+                    else if (i == 2) ui_canvas.printf("Minutes: %02lu", (unsigned long)tm2);
+                    else ui_canvas.printf("Seconds: %02lu", (unsigned long)ts2);
+                }
+                ui_canvas.setTextColor(muted, panel);
+                ui_canvas.setCursor(24, 110);
+                ui_canvas.printf("%s  ,/:field  `:save", tf_hints[alarm_setup_field]);
+            }
         }
         ui_canvas.pushSprite(0, 0);
         return;
@@ -3641,7 +4102,7 @@ void renderUI() {
         }
         ui_canvas.setTextColor(muted, bg);
         ui_canvas.setCursor(4, 124);
-        ui_canvas.print(skill_edit_mode ? "E:exit edit" : "E:edit  SPC:chart  A:+cat  K:+skill");
+        ui_canvas.print(skill_edit_mode ? "E:exit edit  SPC:field menu" : "E:edit  SPC:quick menu");
         ui_canvas.setTextColor(text, bg);
         // Spider chart on the right side — 4 modes
         static const char* chart_labels[] = {"Lvl", "TXP", "SLv", "STX"};
@@ -3691,15 +4152,54 @@ void renderUI() {
         }
     } else if (current_screen == UI_PROFILES) {
         refreshProfiles();
-        ui_canvas.printf("Active: %s\n", save_load_system.getActiveProfileName().c_str());
-        if (profile_count > 0) {
-            const ProfileInfo& prof = profile_list[selected_profile_index];
-            ui_canvas.printf("Lvl:%d  HP:%d\n", level_system.getLevel(), health_system.getHealth());
-            ui_canvas.printf("Tasks: %lu do, %lu fail\n", (unsigned long)prof.tasks_completed, (unsigned long)prof.tasks_failed);
-            ui_canvas.printf("Created: %lu  Money: +%ld -%ld\n", (unsigned long)prof.tasks_created,
-                            (long)prof.money_gained, (long)prof.money_spent);
+        String active_name = save_load_system.getActiveProfileName();
+
+        // Profile list on left (up to 5 rows)
+        ui_canvas.setTextColor(muted, bg);
+        ui_canvas.setCursor(4, 40);
+        ui_canvas.printf("PROFILES (%d)", profile_count);
+
+        uint8_t list_window = 5;
+        uint8_t list_start = (selected_profile_index > 2) ? (uint8_t)(selected_profile_index - 2) : 0;
+        for (uint8_t i = 0; i < list_window && (list_start + i) < profile_count; i++) {
+            uint8_t idx = list_start + i;
+            bool is_selected = (idx == selected_profile_index);
+            bool is_active = (profile_list[idx].name == active_name);
+            uint16_t row_bg = is_selected ? accent : panel;
+            uint16_t row_fg = is_selected ? BLACK : (is_active ? yellow : text);
+            int y = 50 + i * 12;
+            ui_canvas.fillRoundRect(2, y, 150, 11, 2, row_bg);
+            ui_canvas.setTextColor(row_fg, row_bg);
+            ui_canvas.setCursor(6, y + 2);
+            ui_canvas.printf("%c %.16s", is_active ? '*' : ' ', profile_list[idx].name.c_str());
         }
-        ui_canvas.println("Profile overview");
+
+        // Right side: details for selected profile
+        if (profile_count > 0 && selected_profile_index < profile_count) {
+            const ProfileInfo& psel = profile_list[selected_profile_index];
+            bool sel_is_active = (psel.name == active_name);
+            ui_canvas.setTextColor(yellow, bg);
+            ui_canvas.setCursor(158, 40);
+            ui_canvas.printf("%.14s", truncateUiText(psel.name.c_str(), 12).c_str());
+            ui_canvas.setTextColor(sel_is_active ? 0x07E0 : muted, bg);
+            ui_canvas.setCursor(158, 50);
+            ui_canvas.println(sel_is_active ? "ACTIVE" : "inactive");
+            ui_canvas.setTextColor(text, bg);
+            if (sel_is_active) {
+                ui_canvas.setCursor(158, 62);
+                ui_canvas.printf("Lv%d HP%d%%\n", level_system.getLevel(), health_system.getHealth());
+            }
+            ui_canvas.setCursor(158, sel_is_active ? 74 : 62);
+            ui_canvas.setTextColor(muted, bg);
+            ui_canvas.printf("Done:%lu\n", (unsigned long)psel.tasks_completed);
+            ui_canvas.printf("Fail:%lu\n", (unsigned long)psel.tasks_failed);
+            ui_canvas.printf("+$%ld\n", (long)psel.money_gained);
+            ui_canvas.printf("-$%ld\n", (long)psel.money_spent);
+        }
+
+        ui_canvas.setTextColor(muted, bg);
+        ui_canvas.setCursor(4, 117);
+        ui_canvas.print("N=new  ENT=load  DEL=delete");
     } else if (current_screen == UI_INVENTORY) {
         // Large money display at top
         ui_canvas.setTextSize(2);
@@ -3880,12 +4380,12 @@ void renderUI() {
         ui_canvas.setTextColor(text, bg);
         ui_canvas.println("M5TDGamify - Quick Guide");
         ui_canvas.println("TAB: screen menu  H: help overlay");
-        ui_canvas.println("DASH: tasks overview, F=fail task");
+        ui_canvas.println("L: manual health  DASH: F=fail task");
         ui_canvas.println("TASKS: manage, E=edit, N=new");
-        ui_canvas.println("SKILLS: SPC cycles spider charts");
+        ui_canvas.println("SKILLS: SPC=quick menu (add/XP/chart)");
         ui_canvas.println("SHOP: buy/craft items");
-        ui_canvas.println("SETTINGS: WiFi,TZ,Health,SkillXP");
         ui_canvas.println("ALARMS: A=add alarm, T=add timer");
+        ui_canvas.println("  SPC=detailed setup for selected");
     } else if (current_screen == UI_ALARMS) {
         // Left pane: alarms; right pane: timers
         // Divider
@@ -3986,8 +4486,8 @@ void renderUI() {
         ui_canvas.setCursor(8, 36);
         if (current_screen == UI_DASHBOARD) {
             ui_canvas.println("DASHBOARD: overview & health");
-            ui_canvas.println("F=fail task  TAB=screen menu");
-            ui_canvas.println("[/]=brightness  G=screensaver");
+            ui_canvas.println("F=fail task  L=set health");
+            ui_canvas.println("TAB=menu  [/]=brightness  G=saver");
         } else if (current_screen == UI_TASKS) {
             ui_canvas.println("TASKS: view & edit your tasks");
             ui_canvas.println("N=new  E=toggle edit  D=delete");
@@ -3995,9 +4495,9 @@ void renderUI() {
             ui_canvas.println("F=fail task  TAB=screen menu");
         } else if (current_screen == UI_SKILLS) {
             ui_canvas.println("SKILLS: track skill progress");
-            ui_canvas.println("A=add category  K=add skill");
-            ui_canvas.println("SPC=cycle chart (4 modes)");
-            ui_canvas.println("Charts: cat-lvl,cat-xp,sk-lvl,sk-xp");
+            ui_canvas.println("SPC=quick menu (add cat/skill,");
+            ui_canvas.println("  edit XP, main XP, cycle chart)");
+            ui_canvas.println("E=edit mode  SPC=field menu");
         } else if (current_screen == UI_SHOP) {
             ui_canvas.println("SHOP: buy & craft items");
             ui_canvas.println(",/=focus  Z=setup mode");
@@ -4011,7 +4511,7 @@ void renderUI() {
         } else if (current_screen == UI_ALARMS) {
             ui_canvas.println("ALARMS & TIMERS");
             ui_canvas.println("LEFT=switch pane  A=add alarm");
-            ui_canvas.println("T=add timer  +/-=adjust time");
+            ui_canvas.println("T=add timer  SPC=setup selected");
             ui_canvas.println("ENT=toggle  DEL=remove");
         } else if (current_screen == UI_PROFILES) {
             ui_canvas.println("PROFILES: manage game profiles");
