@@ -120,7 +120,9 @@ enum OverlayMode {
     OVERLAY_MAIN_XP_EDIT = 16,
     // Alarm/Timer detailed setup
     OVERLAY_ALARM_SETUP = 17,
-    OVERLAY_TIMER_SETUP = 18
+    OVERLAY_TIMER_SETUP = 18,
+    // Alarm/timer actively ringing — covers full screen until dismissed
+    OVERLAY_ALARM_RINGING = 19
 };
 
 UiScreen current_screen = UI_DASHBOARD;
@@ -277,6 +279,14 @@ uint8_t alarm_add_hour = 7;
 uint8_t alarm_add_minute = 0;
 uint32_t alarm_add_duration_seconds = 60;   // default timer: 1 minute
 uint8_t alarm_edit_index = 0xFF;            // 0xFF = adding new, else editing existing
+
+// Alarm/timer ringing state
+bool alarm_ringing = false;
+bool alarm_ringing_is_timer = false;
+uint8_t alarm_ringing_index = 0;
+uint8_t alarm_dismiss_key = 0;     // 0=OPT, 1=ALT, 2=CTRL, 3=FN
+uint32_t alarm_snooze_until_unix = 0;  // non-zero = snoozed; re-ring at this unix time
+uint32_t alarm_last_buzz_ms = 0;
 
 // Screensaver state
 bool screensaver_active = false;
@@ -1276,11 +1286,13 @@ void finishTextInput() {
             setStatus("Skill details updated");
         }
     } else if (input_purpose == INPUT_MATH_QUIZ_ANSWER) {
-        // Parse user answer
-        int64_t user_ans = (int64_t)atoll(text_input_buffer);
+        // Parse user answer, requiring full-string consumption to avoid "abc"→0 false-pass
+        char* endptr = nullptr;
+        int64_t user_ans = (int64_t)strtoll(text_input_buffer, &endptr, 10);
+        bool valid_input = (endptr && endptr != text_input_buffer && *endptr == '\0');
         text_input_active = false;
         input_purpose = INPUT_NONE;
-        if (user_ans == math_quiz_answer) {
+        if (valid_input && user_ans == math_quiz_answer) {
             math_quiz_question++;
             if (math_quiz_question >= 3) {
                 // Passed all 3 questions
@@ -1910,11 +1922,10 @@ void handleNavCommand(NavCommand cmd) {
     }
 
     if (overlay_mode == OVERLAY_SKILL_QUICK_MENU) {
-        // Build available items list dynamically
-        // 0=Add Category, 1=Add Skill (if cat), 2=Edit Skill XP (if skill), 3=Edit Main XP, 4=Cycle Chart
+        // Edit-mode actions: 0=Add Category, 1=Add Skill (if cat), 2=Edit Skill XP (if skill), 3=Edit Main XP
         const SkillCategory* cat = selectedCategory();
         const Skill* sk = selectedSkillInSelectedCategory();
-        uint8_t item_count = 5;  // always 5 items; some may be greyed
+        uint8_t item_count = 4;
         if (cmd == NAV_UP && skill_quick_menu_index > 0) skill_quick_menu_index--;
         else if (cmd == NAV_DOWN && skill_quick_menu_index + 1 < item_count) skill_quick_menu_index++;
         else if (cmd == NAV_SELECT) {
@@ -1939,13 +1950,6 @@ void handleNavCommand(NavCommand cmd) {
                 generateMathQuizQuestion();
                 beginTextInput(INPUT_MATH_QUIZ_ANSWER);
                 overlay_mode = OVERLAY_MATH_QUIZ;
-            } else if (skill_quick_menu_index == 4) {
-                skill_spider_mode = (skill_spider_mode + 1) % 4;
-                static const char* chart_names[] = {
-                    "Chart: cat level", "Chart: cat total XP",
-                    "Chart: skill level", "Chart: skill total XP"
-                };
-                setStatus(chart_names[skill_spider_mode], 1000);
             }
         } else if (cmd == NAV_BACK) {
             overlay_mode = OVERLAY_NONE;
@@ -1969,11 +1973,13 @@ void handleNavCommand(NavCommand cmd) {
                     } else {
                         uint32_t remove_amt = (uint32_t)(-skill_xp_edit_value);
                         sk->current_xp = (sk->current_xp >= remove_amt) ? sk->current_xp - remove_amt : 0;
-                        // Recompute level by resetting and re-adding total remaining XP
+                        // Recompute level from remaining current_xp; preserve lifetime_xp (removal must not inflate it)
+                        uint32_t saved_lifetime = sk->lifetime_xp;
                         uint32_t remaining = sk->current_xp;
                         sk->level = 1;
                         sk->current_xp = 0;
                         if (remaining > 0) skill_system.addXPToSkill(sk->id, remaining);
+                        sk->lifetime_xp = saved_lifetime;
                     }
                     saveSkills();
                     setStatus("Skill XP updated");
@@ -2060,12 +2066,12 @@ void handleNavCommand(NavCommand cmd) {
         bool changed = false;
         if (cmd == NAV_UP) {
             if (alarm_setup_field == 1) { if (h < 99) { h++; changed = true; } }
-            else if (alarm_setup_field == 2) { if (m < 59) m++; else { m = 0; if (h < 99) h++; } changed = true; }
-            else if (alarm_setup_field == 3) { if (s < 59) s++; else { s = 0; if (m < 59) m++; else { m = 0; if (h < 99) h++; } } changed = true; }
+            else if (alarm_setup_field == 2) { if (m < 59) { m++; changed = true; } else if (h < 99) { m = 0; h++; changed = true; } }
+            else if (alarm_setup_field == 3) { if (s < 59) { s++; changed = true; } else if (m < 59) { s = 0; m++; changed = true; } else if (h < 99) { s = 0; m = 0; h++; changed = true; } }
         } else if (cmd == NAV_DOWN) {
             if (alarm_setup_field == 1) { if (h > 0) { h--; changed = true; } }
-            else if (alarm_setup_field == 2) { if (m > 0) m--; else { m = 59; if (h > 0) h--; } changed = true; }
-            else if (alarm_setup_field == 3) { if (s > 0) s--; else { s = 59; if (m > 0) m--; else { m = 59; if (h > 0) h--; } } changed = true; }
+            else if (alarm_setup_field == 2) { if (m > 0) { m--; changed = true; } else if (h > 0) { m = 59; h--; changed = true; } }
+            else if (alarm_setup_field == 3) { if (s > 0) { s--; changed = true; } else if (m > 0) { s = 59; m--; changed = true; } else if (h > 0) { s = 59; m = 59; h--; changed = true; } }
         } else if (cmd == NAV_LEFT && alarm_setup_field > 0) {
             alarm_setup_field--;
         } else if (cmd == NAV_RIGHT && alarm_setup_field < 3) {
@@ -3115,6 +3121,7 @@ void handleKeyInput(char key) {
     // 'L' key activates manual health input mode (globally, except in text input)
     if (key == 'l' || key == 'L') {
         overlay_mode = OVERLAY_NONE;
+        help_overlay_active = false;
         manual_health_active = true;
         manual_health_input_percent = (uint8_t)health_system.getHealth();
         manual_health_last_input_time = millis();
@@ -3177,19 +3184,19 @@ void handleKeyInput(char key) {
         case UI_SKILLS:
             if (key == 'e' || key == 'E') {
                 skill_edit_mode = !skill_edit_mode;
-                setStatus(skill_edit_mode ? "Skill edit ON (SPC=field menu)" : "Skill edit OFF");
+                setStatus(skill_edit_mode ? "Skill edit ON (SPC=edit menu)" : "Skill edit OFF (SPC=cycle chart)");
             } else if (skill_edit_mode && key == ' ') {
-                // Open field picker — category context if no skill selected, else skill context
-                const SkillCategory* cat = selectedCategory();
-                const Skill* sk = selectedSkillInSelectedCategory();
-                skill_edit_is_category = (sk == nullptr);
-                skill_field_menu_index = 0;
-                if (cat) overlay_mode = OVERLAY_SKILL_FIELD_MENU;
-                else setStatus("No category selected");
-            } else if (!skill_edit_mode && key == ' ') {
-                // Open quick-action menu
+                // In edit mode: open action menu (add/remove/edit skills and XP)
                 skill_quick_menu_index = 0;
                 overlay_mode = OVERLAY_SKILL_QUICK_MENU;
+            } else if (!skill_edit_mode && key == ' ') {
+                // Without edit mode: cycle spider chart only
+                skill_spider_mode = (skill_spider_mode + 1) % 4;
+                static const char* chart_names[] = {
+                    "Chart: cat level", "Chart: cat total XP",
+                    "Chart: skill level", "Chart: skill total XP"
+                };
+                setStatus(chart_names[skill_spider_mode], 1000);
             }
             break;
 
@@ -3501,7 +3508,8 @@ void renderUI() {
         if (task_edit_mode) scroll_text += ",/:Field  ;/.:Value  SPC:Detail  ENT:Save  E:ExitEdit  TAB:Menu";
         else scroll_text += ";/.:Select  ENT:Done  E:Edit  N:New  D:Delete  T:Details  TAB:Menu";
     } else if (current_screen == UI_SKILLS) {
-        scroll_text += ",/:Category  ;/.:Skill  E:Edit  SPC:Menu(AddCat/AddSkill/XP/Chart)  TAB:Menu";
+        if (skill_edit_mode) scroll_text += ",/:Category  ;/.:Skill  E:ExitEdit  SPC:EditMenu(AddCat/AddSkill/XP)  TAB:Menu";
+        else scroll_text += ",/:Category  ;/.:Skill  E:EditMode  SPC:CycleChart  TAB:Menu";
     } else if (current_screen == UI_SHOP) {
         scroll_text += ";/.:Select  ,/:Focus  ENT:BuyCraft  Z:Setup  N:Add  R:Recipe  TAB:Menu";
     } else if (current_screen == UI_PROFILES) {
@@ -3835,20 +3843,22 @@ void renderUI() {
         } else if (overlay_mode == OVERLAY_SKILL_QUICK_MENU) {
             const SkillCategory* qcat = selectedCategory();
             const Skill* qsk = selectedSkillInSelectedCategory();
-            static const char* qitems[5] = {"Add Category", "Add Skill", "Edit Skill XP", "Edit Main XP", "Cycle Spider Chart"};
+            static const char* qitems[4] = {"Add Category", "Add Skill", "Edit Skill XP", "Edit Main XP"};
             ui_canvas.setCursor(24, 40);
-            ui_canvas.println("SKILLS QUICK MENU");
-            for (uint8_t i = 0; i < 5; i++) {
+            ui_canvas.println("SKILLS EDIT MENU");
+            for (uint8_t i = 0; i < 4; i++) {
                 bool disabled = (i == 1 && !qcat) || (i == 2 && !qsk);
-                uint16_t row_bg = (i == skill_quick_menu_index && !disabled) ? accent : bg;
-                uint16_t row_fg = disabled ? muted : ((i == skill_quick_menu_index) ? BLACK : text);
+                bool selected = (i == skill_quick_menu_index);
+                // Selected+disabled: dim highlight; Selected+enabled: accent; Not selected: bg
+                uint16_t row_bg = selected ? (disabled ? 0x4208 : accent) : bg;
+                uint16_t row_fg = disabled ? muted : (selected ? BLACK : text);
                 ui_canvas.fillRoundRect(24, 52 + i * 11, 192, 10, 2, row_bg);
                 ui_canvas.setTextColor(row_fg, row_bg);
                 ui_canvas.setCursor(28, 53 + i * 11);
                 ui_canvas.print(qitems[i]);
             }
             ui_canvas.setTextColor(muted, panel);
-            ui_canvas.setCursor(24, 110);
+            ui_canvas.setCursor(24, 102);
             ui_canvas.println(";/.:move  ENT:select  `:back");
         } else if (overlay_mode == OVERLAY_SKILL_XP_EDIT) {
             const Skill* xpsk = skill_system.getSkill(skill_xp_edit_skill_id);
@@ -4382,7 +4392,7 @@ void renderUI() {
         ui_canvas.println("TAB: screen menu  H: help overlay");
         ui_canvas.println("L: manual health  DASH: F=fail task");
         ui_canvas.println("TASKS: manage, E=edit, N=new");
-        ui_canvas.println("SKILLS: SPC=quick menu (add/XP/chart)");
+        ui_canvas.println("SKILLS: SPC=cycle chart / E+SPC=edit menu");
         ui_canvas.println("SHOP: buy/craft items");
         ui_canvas.println("ALARMS: A=add alarm, T=add timer");
         ui_canvas.println("  SPC=detailed setup for selected");
@@ -4437,17 +4447,13 @@ void renderUI() {
             ui_canvas.fillRoundRect(122, y - 1, 116, 10, 2, rowbg);
             ui_canvas.setTextColor(rowtxt, rowbg);
             ui_canvas.setCursor(126, y + 1);
-            // Compute remaining
+            // Compute remaining (state changes handled in game loop, not here)
             uint32_t remaining = timer_entries[i].duration_seconds;
             if (timer_entries[i].running && timer_entries[i].start_unix_time != 0) {
                 uint32_t elapsed = (cur_t > (time_t)timer_entries[i].start_unix_time) ?
                                    (uint32_t)(cur_t - timer_entries[i].start_unix_time) : 0;
                 remaining = (elapsed < timer_entries[i].duration_seconds) ?
                             (timer_entries[i].duration_seconds - elapsed) : 0;
-                if (remaining == 0 && timer_entries[i].running) {
-                    timer_entries[i].running = false;
-                    setStatus(timer_entries[i].name[0] ? timer_entries[i].name : "Timer done!", 5000);
-                }
             }
             uint32_t rh = remaining / 3600, rm = (remaining % 3600) / 60, rs = remaining % 60;
             char tstr[16];
@@ -4495,9 +4501,9 @@ void renderUI() {
             ui_canvas.println("F=fail task  TAB=screen menu");
         } else if (current_screen == UI_SKILLS) {
             ui_canvas.println("SKILLS: track skill progress");
-            ui_canvas.println("SPC=quick menu (add cat/skill,");
-            ui_canvas.println("  edit XP, main XP, cycle chart)");
-            ui_canvas.println("E=edit mode  SPC=field menu");
+            ui_canvas.println("SPC (no edit)=cycle spider chart");
+            ui_canvas.println("E=edit mode  SPC (edit)=edit menu");
+            ui_canvas.println("Edit menu: add/remove/edit/XP");
         } else if (current_screen == UI_SHOP) {
             ui_canvas.println("SHOP: buy & craft items");
             ui_canvas.println(",/=focus  Z=setup mode");
@@ -4524,6 +4530,42 @@ void renderUI() {
             ui_canvas.println("Press H to close this overlay");
             ui_canvas.println("Available on every screen.");
         }
+    }
+
+    // Alarm/timer ringing overlay — covers full display until dismissed
+    if (alarm_ringing) {
+        static const char* key_names[] = {"OPT", "ALT", "CTRL", "FN"};
+        const uint16_t ring_bg = 0x6000;  // dark red
+        ui_canvas.fillRoundRect(4, 20, 232, 118, 6, ring_bg);
+        ui_canvas.drawRoundRect(4, 20, 232, 118, 6, 0xF800);
+        ui_canvas.setTextColor(0xFFFF, ring_bg);
+        ui_canvas.setTextSize(2);
+        ui_canvas.setCursor(10, 28);
+        if (alarm_ringing_is_timer) {
+            const char* tname = (alarm_ringing_index < timer_count && timer_entries[alarm_ringing_index].name[0])
+                                ? timer_entries[alarm_ringing_index].name : "Timer";
+            ui_canvas.printf("TIMER: %.9s", tname);
+        } else {
+            const char* aname = (alarm_ringing_index < alarm_count && alarm_entries[alarm_ringing_index].name[0])
+                                ? alarm_entries[alarm_ringing_index].name : "Alarm";
+            ui_canvas.printf("ALARM: %.9s", aname);
+        }
+        ui_canvas.setTextSize(1);
+        ui_canvas.setTextColor(0xFFE0, ring_bg);
+        ui_canvas.setCursor(10, 58);
+        ui_canvas.printf("Press  [%s]  to dismiss", key_names[alarm_dismiss_key]);
+        if (!alarm_ringing_is_timer) {
+            ui_canvas.setTextColor(0xBDF7, ring_bg);
+            ui_canvas.setCursor(10, 74);
+            ui_canvas.println("Any other key = 5 min snooze");
+        }
+        ui_canvas.setTextColor(0xF800, ring_bg);
+        ui_canvas.setTextSize(2);
+        // Pulsing indicator using millis
+        uint32_t pulse = (millis() / 400) % 2;
+        ui_canvas.setCursor(10, 94);
+        ui_canvas.print(pulse ? "** RINGING **" : "             ");
+        ui_canvas.setTextSize(1);
     }
 
     ui_canvas.pushSprite(0, 0);
@@ -4654,7 +4696,7 @@ void loop() {
     M5Cardputer.update();
     health_system.setCurrentTime(time_sync.getCurrentTime());
 
-    // Check alarms
+    // Check alarms — fires ringing overlay instead of single-shot beep
     {
         time_t now_alarm = time_sync.getCurrentTime();
         struct tm ta; localtime_r(&now_alarm, &ta);
@@ -4665,18 +4707,16 @@ void loop() {
                 if (!alarm_entries[i].triggered_today) {
                     alarm_entries[i].triggered_today = true;
                     alarm_dirty = true;
-                    char msg[40];
-                    snprintf(msg, sizeof(msg), "ALARM: %s",
-                             alarm_entries[i].name[0] ? alarm_entries[i].name : "Wake up!");
-                    setStatus(msg, 10000);
-                    const GlobalSettings& acfg = settings_system.settings();
-                    if (acfg.audio_feedback_enabled) {
-                        uint8_t spk_vol = (uint8_t)((uint16_t)acfg.audio_volume * 255 / 100);
-                        M5Cardputer.Speaker.setVolume(spk_vol);
-                        for (int bi = 0; bi < 3; bi++) {
-                            M5Cardputer.Speaker.tone(880, 200);
-                            delay(250);
-                        }
+                    if (!alarm_ringing && alarm_snooze_until_unix == 0) {
+                        alarm_ringing = true;
+                        alarm_ringing_is_timer = false;
+                        alarm_ringing_index = i;
+                        alarm_dismiss_key = (uint8_t)(esp_random() % 4);
+                        alarm_last_buzz_ms = 0;
+                        overlay_mode = OVERLAY_ALARM_RINGING;
+                        screensaver_active = false;
+                        screen_off = false;
+                        M5Cardputer.Display.setBrightness(screen_brightness);
                     }
                 }
             } else {
@@ -4688,6 +4728,64 @@ void loop() {
         }
         if (alarm_dirty && storage_ready) {
             save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
+        }
+    }
+
+    // Check timer expiry — start ringing when a running timer reaches zero
+    {
+        time_t now_t = time_sync.getCurrentTime();
+        bool timer_dirty = false;
+        for (uint8_t i = 0; i < timer_count; i++) {
+            if (!timer_entries[i].active || !timer_entries[i].running) continue;
+            if (timer_entries[i].start_unix_time == 0) continue;
+            uint32_t elapsed = (now_t > (time_t)timer_entries[i].start_unix_time)
+                               ? (uint32_t)(now_t - timer_entries[i].start_unix_time) : 0;
+            if (elapsed >= timer_entries[i].duration_seconds) {
+                timer_entries[i].running = false;
+                timer_dirty = true;
+                if (!alarm_ringing) {
+                    alarm_ringing = true;
+                    alarm_ringing_is_timer = true;
+                    alarm_ringing_index = i;
+                    alarm_dismiss_key = (uint8_t)(esp_random() % 4);
+                    alarm_last_buzz_ms = 0;
+                    overlay_mode = OVERLAY_ALARM_RINGING;
+                    screensaver_active = false;
+                    screen_off = false;
+                    M5Cardputer.Display.setBrightness(screen_brightness);
+                }
+            }
+        }
+        if (timer_dirty && storage_ready) {
+            save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
+        }
+    }
+
+    // Check snooze expiry — re-ring alarm after 5-minute snooze
+    if (alarm_snooze_until_unix > 0) {
+        time_t now_snooze = time_sync.getCurrentTime();
+        if (now_snooze >= (time_t)alarm_snooze_until_unix) {
+            alarm_snooze_until_unix = 0;
+            alarm_ringing = true;
+            alarm_dismiss_key = (uint8_t)(esp_random() % 4);
+            alarm_last_buzz_ms = 0;
+            overlay_mode = OVERLAY_ALARM_RINGING;
+            screensaver_active = false;
+            screen_off = false;
+            M5Cardputer.Display.setBrightness(screen_brightness);
+        }
+    }
+
+    // Buzz periodically while ringing (every ~1 second)
+    if (alarm_ringing && millis() - alarm_last_buzz_ms >= 1000) {
+        alarm_last_buzz_ms = millis();
+        const GlobalSettings& acfg = settings_system.settings();
+        if (acfg.audio_feedback_enabled) {
+            uint8_t spk_vol = (uint8_t)((uint16_t)acfg.audio_volume * 255 / 100);
+            M5Cardputer.Speaker.setVolume(spk_vol);
+            M5Cardputer.Speaker.tone(880, 200);
+            delay(250);
+            M5Cardputer.Speaker.tone(880, 200);
         }
     }
 
@@ -4749,6 +4847,37 @@ void loop() {
             if (ch == '\t' || ch == 9) tab_pressed = true;
             if (ch == '`') backtick_pressed = true;
         }
+
+        // Alarm/timer ringing: consume all key events until dismissed or snoozed
+        if (alarm_ringing) {
+            static const char* key_names[] = {"OPT", "ALT", "CTRL", "FN"};
+            bool correct_dismiss =
+                (alarm_dismiss_key == 0 && ks.opt) ||
+                (alarm_dismiss_key == 1 && ks.alt) ||
+                (alarm_dismiss_key == 2 && ks.ctrl) ||
+                (alarm_dismiss_key == 3 && ks.fn);
+            bool any_key = ks.enter || del_pressed || tab_pressed ||
+                           ks.fn || ks.opt || ks.alt || ks.ctrl ||
+                           ks.word.size() > 0;
+            if (any_key) {
+                if (correct_dismiss || alarm_ringing_is_timer) {
+                    alarm_ringing = false;
+                    overlay_mode = OVERLAY_NONE;
+                    setStatus(alarm_ringing_is_timer ? "Timer dismissed" : "Alarm dismissed", 2000);
+                } else {
+                    // Wrong key for alarm → snooze 5 minutes, re-ring with new dismiss key
+                    alarm_ringing = false;
+                    overlay_mode = OVERLAY_NONE;
+                    alarm_snooze_until_unix = (uint32_t)(time_sync.getCurrentTime() + 5 * 60);
+                    char msg[56];
+                    snprintf(msg, sizeof(msg), "Snoozed 5min. Next: press [%s]",
+                             key_names[alarm_dismiss_key]);
+                    setStatus(msg, 4000);
+                }
+            }
+            return;
+        }
+
         if (tab_pressed) {
             if (!screen_selector_active) openScreenSelector();
             return;
