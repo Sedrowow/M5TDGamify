@@ -120,7 +120,10 @@ enum OverlayMode {
     OVERLAY_MAIN_XP_EDIT = 16,
     // Alarm/Timer detailed setup
     OVERLAY_ALARM_SETUP = 17,
-    OVERLAY_TIMER_SETUP = 18
+    OVERLAY_TIMER_SETUP = 18,
+    // Alarm/Timer actively ringing (buzz until dismissed)
+    OVERLAY_ALARM_RINGING = 19,
+    OVERLAY_TIMER_RINGING = 20
 };
 
 UiScreen current_screen = UI_DASHBOARD;
@@ -277,6 +280,15 @@ uint8_t alarm_add_hour = 7;
 uint8_t alarm_add_minute = 0;
 uint32_t alarm_add_duration_seconds = 60;   // default timer: 1 minute
 uint8_t alarm_edit_index = 0xFF;            // 0xFF = adding new, else editing existing
+// Ringing / snooze state (runtime only, not persisted)
+bool alarm_is_ringing = false;
+uint8_t alarm_ringing_index = 0xFF;
+bool timer_is_ringing = false;
+uint8_t timer_ringing_index = 0xFF;
+uint8_t alarm_dismiss_button = 0;           // 0=OPT key, 1=FN key (chosen randomly on ring)
+uint32_t alarm_ring_again_unix[MAX_ALARMS]; // 0 = no pending re-ring (snooze target)
+uint32_t alarm_last_buzz_ms = 0;
+uint32_t timer_last_buzz_ms = 0;
 
 // Screensaver state
 bool screensaver_active = false;
@@ -1276,11 +1288,14 @@ void finishTextInput() {
             setStatus("Skill details updated");
         }
     } else if (input_purpose == INPUT_MATH_QUIZ_ANSWER) {
-        // Parse user answer
-        int64_t user_ans = (int64_t)atoll(text_input_buffer);
+        // Parse user answer — use strtoll and require full-string consumption so that
+        // non-numeric input (e.g. "abc") is rejected rather than parsed as 0.
+        char* endptr = nullptr;
+        int64_t user_ans = strtoll(text_input_buffer, &endptr, 10);
+        bool valid_input = (endptr != text_input_buffer && *endptr == '\0' && text_input_len > 0);
         text_input_active = false;
         input_purpose = INPUT_NONE;
-        if (user_ans == math_quiz_answer) {
+        if (valid_input && user_ans == math_quiz_answer) {
             math_quiz_question++;
             if (math_quiz_question >= 3) {
                 // Passed all 3 questions
@@ -1819,51 +1834,16 @@ void handleNavCommand(NavCommand cmd) {
         return;
     }
 
-    // ---- Skill overlays ----
-    if (overlay_mode == OVERLAY_SKILL_FIELD_MENU) {
-        // Category fields: 0=Rename Cat, 1=Add Skill, 2=Delete Cat
-        // Skill fields:    0=Rename Skill, 1=Edit Details, 2=Add Skill, 3=Delete Skill
-        uint8_t field_count = skill_edit_is_category ? 3 : 4;
-        if (cmd == NAV_UP && skill_field_menu_index > 0) skill_field_menu_index--;
-        else if (cmd == NAV_DOWN && skill_field_menu_index + 1 < field_count) skill_field_menu_index++;
-        else if (cmd == NAV_SELECT) {
-            overlay_mode = OVERLAY_NONE;
-            const SkillCategory* cat = selectedCategory();
-            const Skill* sk = selectedSkillInSelectedCategory();
-            if (skill_edit_is_category) {
-                if (skill_field_menu_index == 0 && cat) {
-                    beginTextInput(INPUT_RENAME_CATEGORY, cat->id);
-                } else if (skill_field_menu_index == 1 && cat) {
-                    beginTextInput(INPUT_ADD_SKILL, cat->id);
-                } else if (skill_field_menu_index == 2 && cat) {
-                    skill_delete_is_category = true;
-                    profile_delete_confirm_until = millis() + 5000;
-                    overlay_mode = OVERLAY_SKILL_DELETE_CONFIRM;
-                }
-            } else {
-                if (skill_field_menu_index == 0 && sk) {
-                    beginTextInput(INPUT_RENAME_SKILL, sk->id);
-                } else if (skill_field_menu_index == 1 && sk) {
-                    beginTextInput(INPUT_EDIT_SKILL_DETAILS, sk->id);
-                } else if (skill_field_menu_index == 2 && cat) {
-                    beginTextInput(INPUT_ADD_SKILL, cat->id);
-                } else if (skill_field_menu_index == 3 && sk) {
-                    skill_delete_is_category = false;
-                    profile_delete_confirm_until = millis() + 5000;
-                    overlay_mode = OVERLAY_SKILL_DELETE_CONFIRM;
-                }
-            }
-        } else if (cmd == NAV_BACK) {
-            overlay_mode = OVERLAY_NONE;
-        }
+    // Ringing overlays are handled via key input in loop(); block nav here
+    if (overlay_mode == OVERLAY_ALARM_RINGING || overlay_mode == OVERLAY_TIMER_RINGING) {
         return;
     }
 
+    // ---- Skill overlays ----
     if (overlay_mode == OVERLAY_SKILL_FIELD_MENU) {
-        // Category fields: 0=Rename Cat, 1=Add Category, 2=Add Skill, 3=Delete Cat
-        // Skill fields:    0=Rename Skill, 1=Edit Details, 2=Add Skill, 3=Delete Skill
-        // Both contexts have 4 items
-        uint8_t field_count = 4;
+        // Category fields (5): Rename Cat, Add Category, Add Skill, Edit Main XP, Delete Cat
+        // Skill fields    (6): Rename Skill, Edit Details, Add Skill, Edit Skill XP, Edit Main XP, Delete Skill
+        uint8_t field_count = skill_edit_is_category ? 5 : 6;
         if (cmd == NAV_UP && skill_field_menu_index > 0) skill_field_menu_index--;
         else if (cmd == NAV_DOWN && skill_field_menu_index + 1 < field_count) skill_field_menu_index++;
         else if (cmd == NAV_SELECT) {
@@ -1877,7 +1857,13 @@ void handleNavCommand(NavCommand cmd) {
                     beginTextInput(INPUT_ADD_CATEGORY);
                 } else if (skill_field_menu_index == 2 && cat) {
                     beginTextInput(INPUT_ADD_SKILL, cat->id);
-                } else if (skill_field_menu_index == 3 && cat) {
+                } else if (skill_field_menu_index == 3) {
+                    // Edit Main XP — math quiz guard
+                    math_quiz_question = 0;
+                    generateMathQuizQuestion();
+                    beginTextInput(INPUT_MATH_QUIZ_ANSWER);
+                    overlay_mode = OVERLAY_MATH_QUIZ;
+                } else if (skill_field_menu_index == 4 && cat) {
                     skill_delete_is_category = true;
                     profile_delete_confirm_until = millis() + 5000;
                     overlay_mode = OVERLAY_SKILL_DELETE_CONFIRM;
@@ -1890,6 +1876,17 @@ void handleNavCommand(NavCommand cmd) {
                 } else if (skill_field_menu_index == 2 && cat) {
                     beginTextInput(INPUT_ADD_SKILL, cat->id);
                 } else if (skill_field_menu_index == 3 && sk) {
+                    skill_xp_edit_skill_id = sk->id;
+                    skill_xp_edit_value = 0;
+                    skill_xp_edit_step_index = 2;
+                    overlay_mode = OVERLAY_SKILL_XP_EDIT;
+                } else if (skill_field_menu_index == 4) {
+                    // Edit Main XP — math quiz guard
+                    math_quiz_question = 0;
+                    generateMathQuizQuestion();
+                    beginTextInput(INPUT_MATH_QUIZ_ANSWER);
+                    overlay_mode = OVERLAY_MATH_QUIZ;
+                } else if (skill_field_menu_index == 5 && sk) {
                     skill_delete_is_category = false;
                     profile_delete_confirm_until = millis() + 5000;
                     overlay_mode = OVERLAY_SKILL_DELETE_CONFIRM;
@@ -1899,6 +1896,8 @@ void handleNavCommand(NavCommand cmd) {
             overlay_mode = OVERLAY_NONE;
         }
         return;
+    }
+
     }
 
     if (overlay_mode == OVERLAY_SKILL_DELETE_CONFIRM) {
@@ -1969,11 +1968,16 @@ void handleNavCommand(NavCommand cmd) {
                     } else {
                         uint32_t remove_amt = (uint32_t)(-skill_xp_edit_value);
                         sk->current_xp = (sk->current_xp >= remove_amt) ? sk->current_xp - remove_amt : 0;
-                        // Recompute level by resetting and re-adding total remaining XP
+                        // Recompute level/current_xp without touching lifetime_xp.
+                        // Save lifetime_xp, reset level, re-apply remaining XP via addXPToSkill,
+                        // then restore the original lifetime_xp so removals don't inflate it.
+                        uint32_t saved_lifetime = sk->lifetime_xp;
                         uint32_t remaining = sk->current_xp;
                         sk->level = 1;
                         sk->current_xp = 0;
+                        sk->lifetime_xp = 0;  // addXPToSkill will add to this; we'll overwrite
                         if (remaining > 0) skill_system.addXPToSkill(sk->id, remaining);
+                        sk->lifetime_xp = saved_lifetime;  // restore: removal doesn't change lifetime
                     }
                     saveSkills();
                     setStatus("Skill XP updated");
@@ -2060,12 +2064,28 @@ void handleNavCommand(NavCommand cmd) {
         bool changed = false;
         if (cmd == NAV_UP) {
             if (alarm_setup_field == 1) { if (h < 99) { h++; changed = true; } }
-            else if (alarm_setup_field == 2) { if (m < 59) m++; else { m = 0; if (h < 99) h++; } changed = true; }
-            else if (alarm_setup_field == 3) { if (s < 59) s++; else { s = 0; if (m < 59) m++; else { m = 0; if (h < 99) h++; } } changed = true; }
+            else if (alarm_setup_field == 2) {
+                if (m < 59) { m++; changed = true; }
+                else if (h < 99) { m = 0; h++; changed = true; }   // carry into hours only when possible
+            }
+            else if (alarm_setup_field == 3) {
+                if (s < 59) { s++; changed = true; }
+                else if (m < 59) { s = 0; m++; changed = true; }   // carry into minutes
+                else if (h < 99) { s = 0; m = 0; h++; changed = true; }  // carry into hours
+                // at 99:59:59 do nothing — already at maximum
+            }
         } else if (cmd == NAV_DOWN) {
             if (alarm_setup_field == 1) { if (h > 0) { h--; changed = true; } }
-            else if (alarm_setup_field == 2) { if (m > 0) m--; else { m = 59; if (h > 0) h--; } changed = true; }
-            else if (alarm_setup_field == 3) { if (s > 0) s--; else { s = 59; if (m > 0) m--; else { m = 59; if (h > 0) h--; } } changed = true; }
+            else if (alarm_setup_field == 2) {
+                if (m > 0) { m--; changed = true; }
+                else if (h > 0) { m = 59; h--; changed = true; }   // borrow from hours only when possible
+            }
+            else if (alarm_setup_field == 3) {
+                if (s > 0) { s--; changed = true; }
+                else if (m > 0) { s = 59; m--; changed = true; }   // borrow from minutes
+                else if (h > 0) { s = 59; m = 59; h--; changed = true; }  // borrow from hours
+                // at 00:00:00 do nothing — already at minimum
+            }
         } else if (cmd == NAV_LEFT && alarm_setup_field > 0) {
             alarm_setup_field--;
         } else if (cmd == NAV_RIGHT && alarm_setup_field < 3) {
@@ -3115,6 +3135,7 @@ void handleKeyInput(char key) {
     // 'L' key activates manual health input mode (globally, except in text input)
     if (key == 'l' || key == 'L') {
         overlay_mode = OVERLAY_NONE;
+        help_overlay_active = false;
         manual_health_active = true;
         manual_health_input_percent = (uint8_t)health_system.getHealth();
         manual_health_last_input_time = millis();
@@ -3177,19 +3198,28 @@ void handleKeyInput(char key) {
         case UI_SKILLS:
             if (key == 'e' || key == 'E') {
                 skill_edit_mode = !skill_edit_mode;
-                setStatus(skill_edit_mode ? "Skill edit ON (SPC=field menu)" : "Skill edit OFF");
+                setStatus(skill_edit_mode ? "Skill edit ON (SPC=field menu)" : "Skill edit OFF (SPC=cycle chart)");
             } else if (skill_edit_mode && key == ' ') {
-                // Open field picker — category context if no skill selected, else skill context
+                // Edit mode: open field picker for add/remove/XP editing
                 const SkillCategory* cat = selectedCategory();
                 const Skill* sk = selectedSkillInSelectedCategory();
                 skill_edit_is_category = (sk == nullptr);
                 skill_field_menu_index = 0;
                 if (cat) overlay_mode = OVERLAY_SKILL_FIELD_MENU;
-                else setStatus("No category selected");
+                else {
+                    // No category yet — offer add category directly
+                    skill_edit_is_category = true;
+                    skill_field_menu_index = 1;  // pre-select "Add Category"
+                    overlay_mode = OVERLAY_SKILL_FIELD_MENU;
+                }
             } else if (!skill_edit_mode && key == ' ') {
-                // Open quick-action menu
-                skill_quick_menu_index = 0;
-                overlay_mode = OVERLAY_SKILL_QUICK_MENU;
+                // Browse mode: spacebar only cycles spider chart
+                skill_spider_mode = (skill_spider_mode + 1) % 4;
+                static const char* chart_names[] = {
+                    "Chart: cat level", "Chart: cat total XP",
+                    "Chart: skill level", "Chart: skill total XP"
+                };
+                setStatus(chart_names[skill_spider_mode], 1000);
             }
             break;
 
@@ -3794,24 +3824,24 @@ void renderUI() {
             ui_canvas.setCursor(24, 78);
             ui_canvas.printf("Y = yes   N = no (%lus)", (unsigned long)remain);
         } else if (overlay_mode == OVERLAY_SKILL_FIELD_MENU) {
-            // Category fields: Rename Cat / Add Category / Add Skill / Delete Cat
-            // Skill fields:    Rename Skill / Edit Details / Add Skill / Delete Skill
-            static const char* cat_fields[4]  = {"Rename Category", "Add Category", "Add Skill", "Delete Category"};
-            static const char* sk_fields[4]   = {"Rename Skill", "Edit Details", "Add Skill", "Delete Skill"};
+            // Category fields (5): Rename Cat / Add Category / Add Skill / Edit Main XP / Delete Cat
+            // Skill fields    (6): Rename Skill / Edit Details / Add Skill / Edit Skill XP / Edit Main XP / Delete Skill
+            static const char* cat_fields[5] = {"Rename Category", "Add Category", "Add Skill", "Edit Main XP", "Delete Category"};
+            static const char* sk_fields[6]  = {"Rename Skill", "Edit Details", "Add Skill", "Edit Skill XP", "Edit Main XP", "Delete Skill"};
             const char** fields = skill_edit_is_category ? cat_fields : sk_fields;
-            uint8_t field_count = 4;
-            ui_canvas.setCursor(24, 40);
+            uint8_t field_count = skill_edit_is_category ? 5 : 6;
+            ui_canvas.setCursor(24, 36);
             ui_canvas.println(skill_edit_is_category ? "CATEGORY EDIT" : "SKILL EDIT");
             for (uint8_t i = 0; i < field_count; i++) {
                 uint16_t row_bg = (i == skill_field_menu_index) ? accent : bg;
                 uint16_t row_fg = (i == skill_field_menu_index) ? BLACK : text;
-                ui_canvas.fillRoundRect(24, 52 + i * 12, 192, 10, 2, row_bg);
+                ui_canvas.fillRoundRect(24, 47 + i * 11, 192, 10, 2, row_bg);
                 ui_canvas.setTextColor(row_fg, row_bg);
-                ui_canvas.setCursor(28, 53 + i * 12);
+                ui_canvas.setCursor(28, 48 + i * 11);
                 ui_canvas.print(fields[i]);
             }
             ui_canvas.setTextColor(muted, panel);
-            ui_canvas.setCursor(24, 106);
+            ui_canvas.setCursor(24, 115);
             ui_canvas.println(";/.:move  ENT:select  `:back");
         } else if (overlay_mode == OVERLAY_SKILL_DELETE_CONFIRM) {
             const char* del_what = skill_delete_is_category ? "CATEGORY" : "SKILL";
@@ -3840,8 +3870,10 @@ void renderUI() {
             ui_canvas.println("SKILLS QUICK MENU");
             for (uint8_t i = 0; i < 5; i++) {
                 bool disabled = (i == 1 && !qcat) || (i == 2 && !qsk);
-                uint16_t row_bg = (i == skill_quick_menu_index && !disabled) ? accent : bg;
-                uint16_t row_fg = disabled ? muted : ((i == skill_quick_menu_index) ? BLACK : text);
+                bool selected = (i == skill_quick_menu_index);
+                // Keep selection highlight even when row is disabled so the cursor stays visible
+                uint16_t row_bg = selected ? accent : bg;
+                uint16_t row_fg = disabled ? (selected ? 0xC618 : muted) : (selected ? BLACK : text);
                 ui_canvas.fillRoundRect(24, 52 + i * 11, 192, 10, 2, row_bg);
                 ui_canvas.setTextColor(row_fg, row_bg);
                 ui_canvas.setCursor(28, 53 + i * 11);
@@ -3947,6 +3979,46 @@ void renderUI() {
                 ui_canvas.setCursor(24, 110);
                 ui_canvas.printf("%s  ,/:field  `:save", tf_hints[alarm_setup_field]);
             }
+        } else if (overlay_mode == OVERLAY_ALARM_RINGING) {
+            // Full-screen alarm ringing notification
+            const char* btn_name = (alarm_dismiss_button == 0) ? "OPT" : "FN";
+            ui_canvas.fillRoundRect(4, 22, 232, 100, 4, 0x0841);
+            ui_canvas.drawRoundRect(4, 22, 232, 100, 4, 0xF800);  // red border
+            ui_canvas.setTextColor(0xF800, 0x0841);
+            ui_canvas.setTextSize(2);
+            ui_canvas.setCursor(16, 30);
+            ui_canvas.print("  ALARM!");
+            ui_canvas.setTextSize(1);
+            ui_canvas.setTextColor(yellow, 0x0841);
+            ui_canvas.setCursor(16, 56);
+            if (alarm_ringing_index < alarm_count) {
+                const AlarmEntry& ae = alarm_entries[alarm_ringing_index];
+                ui_canvas.printf("%.20s", ae.name[0] ? ae.name : "Wake up!");
+            }
+            ui_canvas.setTextColor(text, 0x0841);
+            ui_canvas.setCursor(16, 72);
+            ui_canvas.printf("[%s] = dismiss", btn_name);
+            ui_canvas.setTextColor(muted, 0x0841);
+            ui_canvas.setCursor(16, 84);
+            ui_canvas.print("Any other key = snooze 5 min");
+        } else if (overlay_mode == OVERLAY_TIMER_RINGING) {
+            // Full-screen timer done notification
+            ui_canvas.fillRoundRect(4, 22, 232, 100, 4, 0x0841);
+            ui_canvas.drawRoundRect(4, 22, 232, 100, 4, 0x07E0);  // green border
+            ui_canvas.setTextColor(0x07E0, 0x0841);
+            ui_canvas.setTextSize(2);
+            ui_canvas.setCursor(16, 30);
+            ui_canvas.print(" TIMER DONE");
+            ui_canvas.setTextSize(1);
+            ui_canvas.setTextColor(yellow, 0x0841);
+            ui_canvas.setCursor(16, 56);
+            if (timer_ringing_index < timer_count) {
+                const TimerEntry& te = timer_entries[timer_ringing_index];
+                ui_canvas.printf("%.20s", te.name[0] ? te.name : "Timer finished!");
+            }
+            ui_canvas.setTextColor(muted, 0x0841);
+            ui_canvas.setCursor(16, 72);
+            ui_canvas.print("Press any key to dismiss");
         }
         ui_canvas.pushSprite(0, 0);
         return;
@@ -4102,7 +4174,7 @@ void renderUI() {
         }
         ui_canvas.setTextColor(muted, bg);
         ui_canvas.setCursor(4, 124);
-        ui_canvas.print(skill_edit_mode ? "E:exit edit  SPC:field menu" : "E:edit  SPC:quick menu");
+        ui_canvas.print(skill_edit_mode ? "E:exit edit  SPC:field menu" : "E:edit  SPC:cycle chart");
         ui_canvas.setTextColor(text, bg);
         // Spider chart on the right side — 4 modes
         static const char* chart_labels[] = {"Lvl", "TXP", "SLv", "STX"};
@@ -4444,10 +4516,7 @@ void renderUI() {
                                    (uint32_t)(cur_t - timer_entries[i].start_unix_time) : 0;
                 remaining = (elapsed < timer_entries[i].duration_seconds) ?
                             (timer_entries[i].duration_seconds - elapsed) : 0;
-                if (remaining == 0 && timer_entries[i].running) {
-                    timer_entries[i].running = false;
-                    setStatus(timer_entries[i].name[0] ? timer_entries[i].name : "Timer done!", 5000);
-                }
+                // Elapsed detection and ringing are now handled in loop(); skip here
             }
             uint32_t rh = remaining / 3600, rm = (remaining % 3600) / 60, rs = remaining % 60;
             char tstr[16];
@@ -4495,9 +4564,9 @@ void renderUI() {
             ui_canvas.println("F=fail task  TAB=screen menu");
         } else if (current_screen == UI_SKILLS) {
             ui_canvas.println("SKILLS: track skill progress");
-            ui_canvas.println("SPC=quick menu (add cat/skill,");
-            ui_canvas.println("  edit XP, main XP, cycle chart)");
-            ui_canvas.println("E=edit mode  SPC=field menu");
+            ui_canvas.println("SPC=cycle spider chart");
+            ui_canvas.println("E=edit mode (add/remove/XP)");
+            ui_canvas.println("Edit: SPC=field menu");
         } else if (current_screen == UI_SHOP) {
             ui_canvas.println("SHOP: buy & craft items");
             ui_canvas.println(",/=focus  Z=setup mode");
@@ -4654,29 +4723,35 @@ void loop() {
     M5Cardputer.update();
     health_system.setCurrentTime(time_sync.getCurrentTime());
 
-    // Check alarms
+    // Check alarms and snooze re-rings
     {
         time_t now_alarm = time_sync.getCurrentTime();
         struct tm ta; localtime_r(&now_alarm, &ta);
         bool alarm_dirty = false;
         for (uint8_t i = 0; i < alarm_count; i++) {
+            // Check snooze re-ring: fire again once the snooze window expires
+            if (alarm_ring_again_unix[i] > 0 && (uint32_t)now_alarm >= alarm_ring_again_unix[i]) {
+                alarm_ring_again_unix[i] = 0;
+                if (!alarm_is_ringing && !timer_is_ringing) {
+                    alarm_is_ringing = true;
+                    alarm_ringing_index = i;
+                    alarm_dismiss_button = (uint8_t)(esp_random() % 2);
+                    overlay_mode = OVERLAY_ALARM_RINGING;
+                    alarm_last_buzz_ms = millis() - 2100; // fire buzz immediately next cycle
+                }
+                continue;
+            }
             if (!alarm_entries[i].active || !alarm_entries[i].enabled) continue;
             if (ta.tm_hour == alarm_entries[i].hour && ta.tm_min == alarm_entries[i].minute) {
                 if (!alarm_entries[i].triggered_today) {
                     alarm_entries[i].triggered_today = true;
                     alarm_dirty = true;
-                    char msg[40];
-                    snprintf(msg, sizeof(msg), "ALARM: %s",
-                             alarm_entries[i].name[0] ? alarm_entries[i].name : "Wake up!");
-                    setStatus(msg, 10000);
-                    const GlobalSettings& acfg = settings_system.settings();
-                    if (acfg.audio_feedback_enabled) {
-                        uint8_t spk_vol = (uint8_t)((uint16_t)acfg.audio_volume * 255 / 100);
-                        M5Cardputer.Speaker.setVolume(spk_vol);
-                        for (int bi = 0; bi < 3; bi++) {
-                            M5Cardputer.Speaker.tone(880, 200);
-                            delay(250);
-                        }
+                    if (!alarm_is_ringing && !timer_is_ringing) {
+                        alarm_is_ringing = true;
+                        alarm_ringing_index = i;
+                        alarm_dismiss_button = (uint8_t)(esp_random() % 2);
+                        overlay_mode = OVERLAY_ALARM_RINGING;
+                        alarm_last_buzz_ms = millis() - 2100; // fire buzz immediately next cycle
                     }
                 }
             } else {
@@ -4691,6 +4766,56 @@ void loop() {
         }
     }
 
+    // Check timers for elapsed completion
+    {
+        time_t now_t = time_sync.getCurrentTime();
+        bool timer_dirty = false;
+        for (uint8_t i = 0; i < timer_count; i++) {
+            if (!timer_entries[i].active || !timer_entries[i].running || timer_entries[i].start_unix_time == 0) continue;
+            uint32_t elapsed = (now_t > (time_t)timer_entries[i].start_unix_time) ?
+                               (uint32_t)(now_t - timer_entries[i].start_unix_time) : 0;
+            if (elapsed >= timer_entries[i].duration_seconds) {
+                timer_entries[i].running = false;
+                timer_dirty = true;
+                if (!alarm_is_ringing && !timer_is_ringing) {
+                    timer_is_ringing = true;
+                    timer_ringing_index = i;
+                    overlay_mode = OVERLAY_TIMER_RINGING;
+                    timer_last_buzz_ms = millis() - 2100; // fire buzz immediately next cycle
+                }
+            }
+        }
+        if (timer_dirty && storage_ready) {
+            save_load_system.saveAlarmsAndTimers(alarm_entries, alarm_count, timer_entries, timer_count);
+        }
+    }
+
+    // Periodic buzz while alarm or timer is ringing (every 2 seconds)
+    {
+        const GlobalSettings& acfg = settings_system.settings();
+        uint8_t spk_vol = (uint8_t)((uint16_t)acfg.audio_volume * 255 / 100);
+        if (alarm_is_ringing && millis() - alarm_last_buzz_ms >= 2000) {
+            alarm_last_buzz_ms = millis();
+            if (acfg.audio_feedback_enabled) {
+                M5Cardputer.Speaker.setVolume(spk_vol);
+                for (int bi = 0; bi < 3; bi++) {
+                    M5Cardputer.Speaker.tone(880, 200);
+                    delay(250);
+                }
+            }
+        }
+        if (timer_is_ringing && millis() - timer_last_buzz_ms >= 2000) {
+            timer_last_buzz_ms = millis();
+            if (acfg.audio_feedback_enabled) {
+                M5Cardputer.Speaker.setVolume(spk_vol);
+                for (int bi = 0; bi < 3; bi++) {
+                    M5Cardputer.Speaker.tone(1000, 180);
+                    delay(220);
+                }
+            }
+        }
+    }
+
     // G0 physical button: toggle screen on/off.
     if (M5Cardputer.BtnA.wasClicked()) {
         screen_off = !screen_off;
@@ -4700,9 +4825,19 @@ void loop() {
             M5Cardputer.Display.setBrightness(screen_brightness);
         }
     }
+    // Wake screen on alarm/timer ring so the user can see the dismiss hint
+    if ((alarm_is_ringing || timer_is_ringing) && screen_off) {
+        screen_off = false;
+        M5Cardputer.Display.setBrightness(screen_brightness);
+    }
     if (screen_off) {
         delay(50);
         return;
+    }
+
+    // Exit screensaver on alarm/timer ring
+    if ((alarm_is_ringing || timer_is_ringing) && screensaver_active) {
+        screensaver_active = false;
     }
 
     // Screensaver mode: render continuously, any key exits.
@@ -4749,6 +4884,44 @@ void loop() {
             if (ch == '\t' || ch == 9) tab_pressed = true;
             if (ch == '`') backtick_pressed = true;
         }
+
+        // Handle alarm ringing dismiss / snooze before any other input
+        if (alarm_is_ringing) {
+            bool any_key = ks.enter || del_pressed || tab_pressed || backtick_pressed ||
+                           ks.fn || ks.opt || ks.word.size() > 0;
+            if (any_key) {
+                bool correct_key = (alarm_dismiss_button == 0 && ks.opt) ||
+                                   (alarm_dismiss_button == 1 && ks.fn);
+                alarm_is_ringing = false;
+                if (overlay_mode == OVERLAY_ALARM_RINGING) overlay_mode = OVERLAY_NONE;
+                if (correct_key) {
+                    setStatus("Alarm dismissed", 2000);
+                } else {
+                    // Wrong key: snooze 5 minutes
+                    alarm_ring_again_unix[alarm_ringing_index] =
+                        (uint32_t)time_sync.getCurrentTime() + 300;
+                    const char* btn = (alarm_dismiss_button == 0) ? "OPT" : "FN";
+                    char msg[48];
+                    snprintf(msg, sizeof(msg), "Snoozed 5 min. [%s] to dismiss.", btn);
+                    setStatus(msg, 3000);
+                }
+            }
+            // Re-render but consume all input while ringing
+            return;
+        }
+
+        // Handle timer ringing dismiss (any key dismisses)
+        if (timer_is_ringing) {
+            bool any_key = ks.enter || del_pressed || tab_pressed || backtick_pressed ||
+                           ks.fn || ks.opt || ks.word.size() > 0;
+            if (any_key) {
+                timer_is_ringing = false;
+                if (overlay_mode == OVERLAY_TIMER_RINGING) overlay_mode = OVERLAY_NONE;
+                setStatus("Timer dismissed", 2000);
+            }
+            return;
+        }
+
         if (tab_pressed) {
             if (!screen_selector_active) openScreenSelector();
             return;
