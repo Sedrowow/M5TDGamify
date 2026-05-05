@@ -4733,12 +4733,18 @@ void loop() {
             // Check snooze re-ring: fire again once the snooze window expires
             if (alarm_ring_again_unix[i] > 0 && (uint32_t)now_alarm >= alarm_ring_again_unix[i]) {
                 alarm_ring_again_unix[i] = 0;
-                if (!alarm_is_ringing && !timer_is_ringing) {
-                    alarm_is_ringing = true;
-                    alarm_ringing_index = i;
-                    alarm_dismiss_button = (uint8_t)(esp_random() % 2);
-                    overlay_mode = OVERLAY_ALARM_RINGING;
-                    alarm_last_buzz_ms = millis() - 2100; // fire buzz immediately next cycle
+                // Only re-ring if the alarm is still active and enabled
+                if (alarm_entries[i].active && alarm_entries[i].enabled) {
+                    if (!alarm_is_ringing && !timer_is_ringing) {
+                        alarm_is_ringing = true;
+                        alarm_ringing_index = i;
+                        alarm_dismiss_button = (uint8_t)(esp_random() % 2);
+                        overlay_mode = OVERLAY_ALARM_RINGING;
+                        alarm_last_buzz_ms = millis() - 2100; // fire buzz immediately next cycle
+                    } else {
+                        // Busy ringing something else; defer by 60 seconds
+                        alarm_ring_again_unix[i] = (uint32_t)now_alarm + 60;
+                    }
                 }
                 continue;
             }
@@ -4753,6 +4759,9 @@ void loop() {
                         alarm_dismiss_button = (uint8_t)(esp_random() % 2);
                         overlay_mode = OVERLAY_ALARM_RINGING;
                         alarm_last_buzz_ms = millis() - 2100; // fire buzz immediately next cycle
+                    } else {
+                        // Busy ringing something else; defer so alarm is not lost
+                        alarm_ring_again_unix[i] = (uint32_t)now_alarm + 60;
                     }
                 }
             } else {
@@ -4799,20 +4808,14 @@ void loop() {
             alarm_last_buzz_ms = millis();
             if (acfg.audio_feedback_enabled) {
                 M5Cardputer.Speaker.setVolume(spk_vol);
-                for (int bi = 0; bi < 3; bi++) {
-                    M5Cardputer.Speaker.tone(880, 200);
-                    delay(250);
-                }
+                M5Cardputer.Speaker.tone(880, 200); // single short beep; no blocking delay
             }
         }
         if (timer_is_ringing && millis() - timer_last_buzz_ms >= 2000) {
             timer_last_buzz_ms = millis();
             if (acfg.audio_feedback_enabled) {
                 M5Cardputer.Speaker.setVolume(spk_vol);
-                for (int bi = 0; bi < 3; bi++) {
-                    M5Cardputer.Speaker.tone(1000, 180);
-                    delay(220);
-                }
+                M5Cardputer.Speaker.tone(1000, 180); // single short beep; no blocking delay
             }
         }
     }
@@ -4901,10 +4904,7 @@ void loop() {
                     // Wrong key: snooze 5 minutes
                     alarm_ring_again_unix[alarm_ringing_index] =
                         (uint32_t)time_sync.getCurrentTime() + 300;
-                    const char* btn = (alarm_dismiss_button == 0) ? "OPT" : "FN";
-                    char msg[48];
-                    snprintf(msg, sizeof(msg), "Snoozed 5 min. [%s] to dismiss.", btn);
-                    setStatus(msg, 3000);
+                    setStatus("Snoozed 5 min. A new dismiss key will be shown on re-ring.", 3000);
                 }
             }
             // Re-render but consume all input while ringing
