@@ -82,6 +82,11 @@ bool SaveLoadSystem::writeTextFile(const String& path, const String& content) {
         }
     }
 
+    // FILE_WRITE may append on some Arduino filesystems; remove first to force rewrite.
+    if (active_fs->exists(path.c_str())) {
+        active_fs->remove(path.c_str());
+    }
+
     File file = active_fs->open(path.c_str(), FILE_WRITE);
     if (!file) {
         last_error = "Open for write failed: " + path;
@@ -589,6 +594,10 @@ bool SaveLoadSystem::saveTasks(const TaskManager& task_manager) {
     }
 
     String path = profileTasksPath(active_profile_name);
+    // Force truncate to avoid duplicate task records from append-mode writes.
+    if (active_fs->exists(path.c_str())) {
+        active_fs->remove(path.c_str());
+    }
     File file = active_fs->open(path.c_str(), FILE_WRITE);
     if (!file) {
         last_error = "Failed to open tasks file for writing";
@@ -653,6 +662,9 @@ bool SaveLoadSystem::loadTasks(TaskManager& task_manager) {
 
     task_manager.clearAll();
 
+    uint16_t seen_ids[MAX_TASKS] = {0};
+    uint16_t seen_count = 0;
+
     while (file.available()) {
         String line = file.readStringUntil('\n');
         line.trim();
@@ -679,6 +691,20 @@ bool SaveLoadSystem::loadTasks(TaskManager& task_manager) {
         }
 
         uint16_t task_id = (uint16_t)fields[1].toInt();
+        bool duplicate_id = false;
+        for (uint16_t sid = 0; sid < seen_count; sid++) {
+            if (seen_ids[sid] == task_id) {
+                duplicate_id = true;
+                break;
+            }
+        }
+        if (duplicate_id) {
+            continue;
+        }
+        if (seen_count < MAX_TASKS) {
+            seen_ids[seen_count++] = task_id;
+        }
+
         const char* name = fields[2].c_str();
         const char* details = fields[3].c_str();
         uint8_t difficulty = (uint8_t)fields[4].toInt();
@@ -762,6 +788,9 @@ bool SaveLoadSystem::saveSharedShopCatalog(const ShopSystem& shop_system) {
     }
 
     String path = sharedShopCatalogPath();
+    if (active_fs->exists(path.c_str())) {
+        active_fs->remove(path.c_str());
+    }
     File file = active_fs->open(path.c_str(), FILE_WRITE);
     if (!file) {
         last_error = "Failed to open shop catalog";
@@ -893,6 +922,9 @@ bool SaveLoadSystem::saveProfileShopState(const ShopSystem& shop_system) {
     }
 
     String path = profileShopStatePath(active_profile_name);
+    if (active_fs->exists(path.c_str())) {
+        active_fs->remove(path.c_str());
+    }
     File file = active_fs->open(path.c_str(), FILE_WRITE);
     if (!file) {
         last_error = "Open profile shop state failed";

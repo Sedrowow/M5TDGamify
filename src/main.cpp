@@ -350,17 +350,18 @@ void setStatus(const char* message, uint32_t ms = 2500) {
 
 // Generate a new math quiz question (up to 8-digit operands)
 void generateMathQuizQuestion() {
-    // op: 0=+, 1=-, 2=* (avoid multiplication for very large numbers)
+    // Simplified math quiz: smaller numbers, easier to solve quickly
+    // op: 0=+, 1=-, 2=*
     math_quiz_op = (uint8_t)(esp_random() % 3);
     if (math_quiz_op == 2) {
-        // multiplication: keep smaller to be solvable (up to 4 digits each)
-        math_quiz_a = (int32_t)(esp_random() % 9999) + 1;
-        math_quiz_b = (int32_t)(esp_random() % 9999) + 1;
+        // multiplication: 1-99 each (2-digit max)
+        math_quiz_a = (int32_t)(esp_random() % 99) + 1;
+        math_quiz_b = (int32_t)(esp_random() % 99) + 1;
         math_quiz_answer = (int64_t)math_quiz_a * math_quiz_b;
     } else {
-        // addition / subtraction: up to 8 digits
-        math_quiz_a = (int32_t)(esp_random() % 99999999) + 1;
-        math_quiz_b = (int32_t)(esp_random() % 99999999) + 1;
+        // addition / subtraction: 1-999 each (3-digit max)
+        math_quiz_a = (int32_t)(esp_random() % 999) + 1;
+        math_quiz_b = (int32_t)(esp_random() % 999) + 1;
         if (math_quiz_op == 0) {
             math_quiz_answer = (int64_t)math_quiz_a + math_quiz_b;
         } else {
@@ -372,9 +373,7 @@ void generateMathQuizQuestion() {
             math_quiz_answer = (int64_t)math_quiz_a - math_quiz_b;
         }
     }
-    char msg[64];
-    snprintf(msg, sizeof(msg), "Quiz %d/3", (int)math_quiz_question + 1);
-    setStatus(msg, 1000);
+    setStatus("Quick Math Quiz", 1000);
 }
 
 void triggerFeedback(FeedbackEvent ev) {
@@ -1296,20 +1295,12 @@ void finishTextInput() {
         text_input_active = false;
         input_purpose = INPUT_NONE;
         if (valid_input && user_ans == math_quiz_answer) {
-            math_quiz_question++;
-            if (math_quiz_question >= 3) {
-                // Passed all 3 questions
-                setStatus("Quiz passed! Edit main XP.", 1500);
-                skill_xp_edit_value = 0;
-                skill_xp_edit_step_index = 2;
-                skill_xp_edit_skill_id = 0;
-                overlay_mode = OVERLAY_MAIN_XP_EDIT;
-            } else {
-                // Next question — restart input
-                generateMathQuizQuestion();
-                beginTextInput(INPUT_MATH_QUIZ_ANSWER);  // re-enables text_input_active
-                overlay_mode = OVERLAY_MATH_QUIZ;
-            }
+            // Single question passed - proceed to main XP edit
+            setStatus("Correct! Edit main XP.", 1500);
+            skill_xp_edit_value = 0;
+            skill_xp_edit_step_index = 2;
+            skill_xp_edit_skill_id = 0;
+            overlay_mode = OVERLAY_MAIN_XP_EDIT;
         } else {
             setStatus("Wrong! Access denied.", 2000);
             overlay_mode = OVERLAY_NONE;
@@ -3917,19 +3908,16 @@ void renderUI() {
             static const char* op_chars[3] = {"+", "-", "*"};
             ui_canvas.setCursor(24, 36);
             ui_canvas.setTextColor(yellow, panel);
-            ui_canvas.printf("MATH QUIZ %d/3 - Type the answer:", (int)math_quiz_question + 1);
+            ui_canvas.printf("QUICK MATH: %ld %s %ld = ?", (long)math_quiz_a, op_chars[math_quiz_op], (long)math_quiz_b);
             ui_canvas.setTextColor(text, panel);
-            ui_canvas.setTextSize(2);
-            ui_canvas.setCursor(28, 56);
-            ui_canvas.printf("%ld %s %ld = ?", (long)math_quiz_a, op_chars[math_quiz_op], (long)math_quiz_b);
             ui_canvas.setTextSize(1);
-            ui_canvas.fillRoundRect(28, 84, 184, 14, 3, bg);
-            ui_canvas.setCursor(32, 87);
+            ui_canvas.fillRoundRect(28, 54, 184, 14, 3, bg);
+            ui_canvas.setCursor(32, 57);
             ui_canvas.setTextColor(text, bg);
             ui_canvas.println(text_input_buffer);
             ui_canvas.setTextColor(muted, panel);
-            ui_canvas.setCursor(24, 106);
-            ui_canvas.println("Type answer  ENT:confirm  `:cancel");
+            ui_canvas.setCursor(24, 76);
+            ui_canvas.println("Answer:  ENT:OK  `:cancel");
         } else if (overlay_mode == OVERLAY_ALARM_SETUP) {
             if (alarm_setup_entry_index < alarm_count) {
                 AlarmEntry& ae = alarm_entries[alarm_setup_entry_index];
@@ -4603,14 +4591,43 @@ void setup() {
     M5Cardputer.Display.setTextColor(WHITE);
     M5Cardputer.Display.setTextSize(1);
 
+    auto drawBootScreen = [&](const char* line1, const char* line2, uint8_t progress) {
+        uint16_t w = M5Cardputer.Display.width();
+        uint16_t h = M5Cardputer.Display.height();
+        M5Cardputer.Display.fillScreen(BLACK);
+        M5Cardputer.Display.setTextColor(0x07FF, BLACK);
+        M5Cardputer.Display.setCursor(12, 20);
+        M5Cardputer.Display.print("FiveITE");
+        M5Cardputer.Display.setTextColor(WHITE, BLACK);
+        M5Cardputer.Display.setCursor(12, 40);
+        M5Cardputer.Display.print(line1 ? line1 : "Starting...");
+        M5Cardputer.Display.setTextColor(0xC618, BLACK);
+        M5Cardputer.Display.setCursor(12, 54);
+        M5Cardputer.Display.print(line2 ? line2 : "");
+
+        uint16_t bar_x = 12;
+        uint16_t bar_y = h - 20;
+        uint16_t bar_w = (w > 24) ? (w - 24) : 100;
+        uint16_t bar_h = 8;
+        M5Cardputer.Display.drawRect(bar_x, bar_y, bar_w, bar_h, 0x7BEF);
+        uint16_t fill_w = (uint16_t)(((uint32_t)(bar_w - 2) * progress) / 100U);
+        M5Cardputer.Display.fillRect(bar_x + 1, bar_y + 1, fill_w, bar_h - 2, 0x07E0);
+    };
+
+    drawBootScreen("Initializing display", "", 5);
+
     ui_canvas.setColorDepth(16);
     ui_canvas_ready = ui_canvas.createSprite(M5Cardputer.Display.width(), M5Cardputer.Display.height());
 
     Serial.begin(115200);
     delay(300);
 
+    drawBootScreen("Mounting storage", "", 18);
+
     storage_ready = save_load_system.begin();
     refreshProfiles();
+
+    drawBootScreen("Loading settings", "", 30);
 
     // Load global device config (WiFi creds, timezone, health schedule)
     GlobalSettings& cfg = settings_system.settings();
@@ -4646,12 +4663,14 @@ void setup() {
         #endif
 
         // Try auto WiFi reconnect — use best available network from saved list
+        drawBootScreen("Checking WiFi", "Trying saved networks", 45);
         bool wifi_ok = settings_system.connectToBestAvailableWiFi(6000);
         if (!wifi_ok && cfg.wifi_ssid[0] != '\0') {
             // Fall back to legacy single credential
             wifi_ok = settings_system.connectWiFi(cfg.wifi_ssid, cfg.wifi_password, 6000);
         }
         if (wifi_ok) {
+            drawBootScreen("Syncing time", "NTP + RTC update", 60);
             // Sync NTP and write back to RTC
             const char* ssid = settings_system.getConnectedSSID();
             const SavedWiFiCred* cred = nullptr;
@@ -4693,8 +4712,10 @@ void setup() {
 
     bool loaded = false;
     if (storage_ready) {
+        drawBootScreen("Loading shop", "", 72);
         loadShopData();
         if (save_load_system.hasSavedSkills()) {
+            drawBootScreen("Loading profile data", "Tasks/skills/state", 82);
             loaded = loadAllProfileData();
         }
     }
@@ -4705,15 +4726,20 @@ void setup() {
     }
 
     if (shop_system.getActiveItemCount() == 0) {
+        drawBootScreen("Building default catalog", "", 90);
         createDefaultShopCatalog();
         saveShopData();
     }
 
     // Load alarms and timers
     if (storage_ready) {
+        drawBootScreen("Loading alarms/timers", "", 96);
         save_load_system.loadAlarmsAndTimers(alarm_entries, alarm_count, MAX_ALARMS,
                                              timer_entries, timer_count, MAX_TIMERS);
     }
+
+    drawBootScreen("Ready", "", 100);
+    delay(250);
 
     setStatus("Ready");
 }
