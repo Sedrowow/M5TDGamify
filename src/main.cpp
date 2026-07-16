@@ -4595,9 +4595,9 @@ void setup() {
         uint16_t w = M5Cardputer.Display.width();
         uint16_t h = M5Cardputer.Display.height();
         M5Cardputer.Display.fillScreen(BLACK);
-        M5Cardputer.Display.setTextColor(0x07FF, BLACK);
+        M5Cardputer.Display.setTextColor(0xFD20, BLACK);
         M5Cardputer.Display.setCursor(12, 20);
-        M5Cardputer.Display.print("FiveITE");
+        M5Cardputer.Display.print("M5TDG");
         M5Cardputer.Display.setTextColor(WHITE, BLACK);
         M5Cardputer.Display.setCursor(12, 40);
         M5Cardputer.Display.print(line1 ? line1 : "Starting...");
