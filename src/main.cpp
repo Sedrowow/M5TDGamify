@@ -1370,6 +1370,13 @@ void handleTextInputChar(char key) {
         return;
     }
 
+    if (input_purpose == INPUT_MATH_QUIZ_ANSWER) {
+        // Math quiz accepts numeric input only.
+        if (!(key >= '0' && key <= '9')) {
+            return;
+        }
+    }
+
     if (isprint((unsigned char)key) && text_input_len < sizeof(text_input_buffer) - 1) {
         text_input_buffer[text_input_len++] = key;
         text_input_buffer[text_input_len] = '\0';
@@ -4952,13 +4959,17 @@ void loop() {
             return;
         }
         if (backtick_pressed) {
-            // backtick alone = go back one level
-            if (screen_selector_sub_active) {
-                screen_selector_sub_active = false;
-            } else if (screen_selector_active) {
-                closeScreenSelector();
+            if (text_input_active) {
+                handleTextInputChar('`');
             } else {
-                handleNavCommand(NAV_BACK);
+                // backtick alone = go back one level
+                if (screen_selector_sub_active) {
+                    screen_selector_sub_active = false;
+                } else if (screen_selector_active) {
+                    closeScreenSelector();
+                } else {
+                    handleNavCommand(NAV_BACK);
+                }
             }
             return;
         }
@@ -5046,7 +5057,11 @@ void loop() {
         }
 
         if (ks.enter) {
-            handleNavCommand(NAV_SELECT);
+            if (text_input_active) {
+                handleTextInputChar('\n');
+            } else {
+                handleNavCommand(NAV_SELECT);
+            }
             nav_handled = true;
         }
 
