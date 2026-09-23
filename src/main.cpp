@@ -126,7 +126,8 @@ enum OverlayMode {
     OVERLAY_TIMER_RINGING = 20,
     OVERLAY_SKILL_DETAILS = 21,
     OVERLAY_ITEM_DETAILS = 22,
-    OVERLAY_BATTERY_LOW = 23
+    OVERLAY_BATTERY_LOW = 23,
+    OVERLAY_HEALTH_SCHEDULE = 24
 };
 
 UiScreen current_screen = UI_DASHBOARD;
@@ -278,6 +279,8 @@ uint8_t manual_health_input_percent = 100;
 uint16_t manual_health_input_points = HEALTH_DEFAULT_MAX_POINTS;
 uint8_t manual_health_step_index = 2;
 bool manual_health_percent_mode = true;
+uint32_t manual_health_mode_changed_ms = 0;
+uint8_t health_schedule_field = 0;
 
 // UI control scrolling state
 uint8_t control_scroll_offset = 0;
@@ -2490,6 +2493,27 @@ void handleNavCommand(NavCommand cmd) {
     }
     // ---- End shop overlays ----
 
+    if (overlay_mode == OVERLAY_HEALTH_SCHEDULE) {
+        GlobalSettings& cfg = settings_system.settings();
+        uint8_t& value = health_schedule_field == 0 ? cfg.health_wake_hour : cfg.health_sleep_hour;
+        if (cmd == NAV_LEFT || cmd == NAV_RIGHT) {
+            health_schedule_field = health_schedule_field == 0 ? 1 : 0;
+        } else if (cmd == NAV_UP) {
+            if (value < 23) value++;
+        } else if (cmd == NAV_DOWN) {
+            if (value > 0) value--;
+        } else if (cmd == NAV_SELECT) {
+            health_system.setTimeBasedCycle(cfg.health_wake_hour, cfg.health_sleep_hour);
+            save_load_system.saveGlobalConfig(cfg);
+            overlay_mode = OVERLAY_NONE;
+            setStatus("Health times saved", 1200);
+        } else if (cmd == NAV_BACK) {
+            overlay_mode = OVERLAY_NONE;
+            setStatus("Health times cancelled", 1000);
+        }
+        return;
+    }
+
     if (overlay_mode == OVERLAY_TASK_DURATION) {
         Task* t = selectedTaskMutable();
         if (!t) {
@@ -3018,30 +3042,8 @@ void handleNavCommand(NavCommand cmd) {
                         setStatus("Manual health");
                     }
                     save_load_system.saveGlobalConfig(cfg);
-                } else if (cmd == NAV_UP) {
-                    if (cfg.health_wake_hour < 12) cfg.health_wake_hour++;
-                    health_system.setTimeBasedCycle(cfg.health_wake_hour, cfg.health_sleep_hour);
-                    save_load_system.saveGlobalConfig(cfg);
-                    char buf[40]; snprintf(buf, sizeof(buf), "Wake %d:00", cfg.health_wake_hour);
-                    setStatus(buf, 1200);
-                } else if (cmd == NAV_DOWN) {
-                    if (cfg.health_wake_hour > 0) cfg.health_wake_hour--;
-                    health_system.setTimeBasedCycle(cfg.health_wake_hour, cfg.health_sleep_hour);
-                    save_load_system.saveGlobalConfig(cfg);
-                    char buf[40]; snprintf(buf, sizeof(buf), "Wake %d:00", cfg.health_wake_hour);
-                    setStatus(buf, 1200);
-                } else if (cmd == NAV_LEFT) {
-                    if (cfg.health_sleep_hour > 12) cfg.health_sleep_hour--;
-                    health_system.setTimeBasedCycle(cfg.health_wake_hour, cfg.health_sleep_hour);
-                    save_load_system.saveGlobalConfig(cfg);
-                    char buf[40]; snprintf(buf, sizeof(buf), "Sleep %d:00", cfg.health_sleep_hour);
-                    setStatus(buf, 1200);
-                } else if (cmd == NAV_RIGHT) {
-                    if (cfg.health_sleep_hour < 23) cfg.health_sleep_hour++;
-                    health_system.setTimeBasedCycle(cfg.health_wake_hour, cfg.health_sleep_hour);
-                    save_load_system.saveGlobalConfig(cfg);
-                    char buf[40]; snprintf(buf, sizeof(buf), "Sleep %d:00", cfg.health_sleep_hour);
-                    setStatus(buf, 1200);
+                } else if (cmd == NAV_UP || cmd == NAV_DOWN) {
+                    setStatus("Press J to edit health times", 1200);
                 }
             } else if (sett_section == SETT_RAND_TASK) {
                 if (cmd == NAV_SELECT) {
@@ -3299,6 +3301,7 @@ void handleKeyInput(char key) {
         manual_health_input_points = health_system.getHealthPoints();
         manual_health_step_index = 2;
         manual_health_last_input_time = millis();
+        manual_health_mode_changed_ms = manual_health_last_input_time;
         setStatus(manual_health_percent_mode ? "Health: 1-0 %, -/= adjust, ENT" : "Health: -/= adjust, SPC=%, ENT", 2000);
         return;
     }
@@ -3494,6 +3497,9 @@ void handleKeyInput(char key) {
                     save_load_system.saveGlobalConfig(cfg);
                     setStatus(cfg.date_format_us ? "Date MM/DD" : "Date DD/MM", 1200);
                 }
+            } else if (sett_section == SETT_HEALTH && (key == 'j' || key == 'J')) {
+                health_schedule_field = 0;
+                overlay_mode = OVERLAY_HEALTH_SCHEDULE;
             } else if (sett_section == SETT_HEALTH && (key == 'p' || key == 'P')) {
                 GlobalSettings& cfg = settings_system.settings();
                 cfg.health_display_points = !cfg.health_display_points;
@@ -3851,6 +3857,25 @@ void renderUI() {
             ui_canvas.setTextColor(muted, panel);
             ui_canvas.setCursor(24, 78);
             ui_canvas.printf("Y = yes   N = no (%lus)", (unsigned long)remain);
+        } else if (overlay_mode == OVERLAY_HEALTH_SCHEDULE) {
+            const GlobalSettings& cfg = settings_system.settings();
+            ui_canvas.setCursor(24, 42);
+            ui_canvas.println("HEALTH SCHEDULE");
+            const char* labels[2] = {"Wake", "Sleep"};
+            const uint8_t values[2] = {cfg.health_wake_hour, cfg.health_sleep_hour};
+            for (uint8_t i = 0; i < 2; i++) {
+                uint16_t row_bg = (i == health_schedule_field) ? accent : bg;
+                uint16_t row_fg = (i == health_schedule_field) ? BLACK : text;
+                ui_canvas.fillRoundRect(30, 54 + i * 16, 180, 14, 2, row_bg);
+                ui_canvas.setTextColor(row_fg, row_bg);
+                ui_canvas.setCursor(36, 57 + i * 16);
+                ui_canvas.printf("%s: %02d:00", labels[i], values[i]);
+            }
+            ui_canvas.setTextColor(muted, panel);
+            ui_canvas.setCursor(24, 96);
+            ui_canvas.println("Left/Right: field  Up/Down: hour");
+            ui_canvas.setCursor(24, 108);
+            ui_canvas.println("Enter: save  `: cancel");
         } else if (overlay_mode == OVERLAY_TASK_DURATION) {
             ui_canvas.setCursor(24, 42);
             ui_canvas.println("TASK DURATION");
@@ -4701,7 +4726,7 @@ void renderUI() {
                              cfg.health_level_percent ? "+%" : "+", cfg.health_level_growth);
             ui_canvas.printf("Wake:%02d:00 Sleep:%02d:00\n", cfg.health_wake_hour, cfg.health_sleep_hour);
             ui_canvas.println("Enter toggle mode");
-            ui_canvas.println("P:display G:scaling M:%growth +/-:value");
+            ui_canvas.println("J:edit times  P:display G:scaling M:%growth +/-:value");
         } else if (sett_section == SETT_RAND_TASK) {
             ui_canvas.println("Generate a random task");
             ui_canvas.println("with random name/desc/");
@@ -5235,7 +5260,9 @@ void loop() {
     }
 
     // Auto-apply manual health after 4 seconds of no input
-    if (manual_health_active && manual_health_percent_mode && millis() - manual_health_last_input_time > 4000) {
+    if (manual_health_active && manual_health_percent_mode &&
+        millis() - manual_health_last_input_time > 4000 &&
+        millis() - manual_health_mode_changed_ms > 4000) {
         uint8_t new_health = (manual_health_input_percent * 100) / 100;
         health_system.setManualHealth(new_health);
         saveAllProfileData();
@@ -5356,6 +5383,7 @@ void loop() {
                     } else {
                         manual_health_input_points = (uint16_t)(((uint32_t)manual_health_input_percent * health_system.getMaxHealthPoints() + 50U) / 100U);
                     }
+                    manual_health_mode_changed_ms = millis();
                     setStatus(manual_health_percent_mode ? "Percent mode" : "Point mode", 1200);
                 }
             }
