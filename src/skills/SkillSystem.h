@@ -87,6 +87,7 @@ public:
     bool setSkillProgress(uint16_t skill_id, uint16_t level, uint32_t current_xp, uint32_t lifetime_xp);
 
     uint16_t addXPToSkill(uint16_t skill_id, uint32_t xp_amount);
+    uint32_t removeXPFromSkill(uint16_t skill_id, uint32_t xp_amount);
     uint16_t addXPFromTask(uint16_t skill_id, uint32_t player_xp_awarded, uint32_t& skill_xp_awarded,
                            float skill_xp_multiplier = DEFAULT_SKILL_XP_MULTIPLIER);
 

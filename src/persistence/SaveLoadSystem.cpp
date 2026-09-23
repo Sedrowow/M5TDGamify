@@ -495,6 +495,8 @@ bool SaveLoadSystem::saveCurrentProfileState(const LevelSystem& level_system, co
     data += "money=" + String(money) + "\n";
     data += "health_mode=" + String((int)health_system.getMode()) + "\n";
     data += "manual_health=" + String((int)health_system.getManualHealth()) + "\n";
+    data += "manual_health_points=" + String((int)health_system.getHealthPoints()) + "\n";
+    data += "health_base_max=" + String((int)health_system.getBaseMaxHealthPoints()) + "\n";
     data += "start_hour=" + String((int)health_system.getTimeBasedStartHour()) + "\n";
     data += "end_hour=" + String((int)health_system.getTimeBasedEndHour()) + "\n";
     data += "timezone_offset=" + String((int)timezone_offset) + "\n";
@@ -525,6 +527,8 @@ bool SaveLoadSystem::loadCurrentProfileState(LevelSystem& level_system, HealthSy
     int loaded_money = 0;
     int loaded_mode = 0;
     int loaded_manual_health = 100;
+    int loaded_manual_health_points = -1;
+    int loaded_health_base_max = -1;
     int loaded_start_hour = 8;
     int loaded_end_hour = 22;
     int loaded_timezone = 0;
@@ -547,6 +551,8 @@ bool SaveLoadSystem::loadCurrentProfileState(LevelSystem& level_system, HealthSy
             else if (key == "money") loaded_money = value.toInt();
             else if (key == "health_mode") loaded_mode = value.toInt();
             else if (key == "manual_health") loaded_manual_health = value.toInt();
+            else if (key == "manual_health_points") loaded_manual_health_points = value.toInt();
+            else if (key == "health_base_max") loaded_health_base_max = value.toInt();
             else if (key == "start_hour") loaded_start_hour = value.toInt();
             else if (key == "end_hour") loaded_end_hour = value.toInt();
             else if (key == "timezone_offset") loaded_timezone = value.toInt();
@@ -564,11 +570,14 @@ bool SaveLoadSystem::loadCurrentProfileState(LevelSystem& level_system, HealthSy
     level_system.setCurrentXP(loaded_current_xp);
     level_system.setLifetimeXP(loaded_lifetime_xp);
 
+    if (loaded_health_base_max > 0) health_system.setBaseMaxHealthPoints((uint16_t)loaded_health_base_max);
+
     money = loaded_money;
 
     if (loaded_mode == HEALTH_MANUAL) {
         health_system.setManualMode();
-        health_system.setManualHealth((uint8_t)loaded_manual_health);
+        if (loaded_manual_health_points >= 0) health_system.setManualHealthPoints((uint16_t)loaded_manual_health_points);
+        else health_system.setManualHealth((uint8_t)loaded_manual_health);
     } else {
         health_system.setTimeBasedMode();
         health_system.setTimeBasedCycle((uint8_t)loaded_start_hour, (uint8_t)loaded_end_hour);
@@ -1220,6 +1229,11 @@ bool SaveLoadSystem::saveGlobalConfig(const GlobalSettings& cfg) {
     data += "timezone_dst=" + String(cfg.timezone_dst ? 1 : 0) + "\n";
     data += "date_format_us=" + String(cfg.date_format_us ? 1 : 0) + "\n";
     data += "health_time_based=" + String(cfg.health_time_based ? 1 : 0) + "\n";
+    data += "health_display_points=" + String(cfg.health_display_points ? 1 : 0) + "\n";
+    data += "health_max_points=" + String((int)cfg.health_max_points) + "\n";
+    data += "health_level_scaling=" + String(cfg.health_level_scaling ? 1 : 0) + "\n";
+    data += "health_level_percent=" + String(cfg.health_level_percent ? 1 : 0) + "\n";
+    data += "health_level_growth=" + String((int)cfg.health_level_growth) + "\n";
     data += "health_wake=" + String((int)cfg.health_wake_hour) + "\n";
     data += "health_sleep=" + String((int)cfg.health_sleep_hour) + "\n";
     data += "visual_feedback=" + String(cfg.visual_feedback_enabled ? 1 : 0) + "\n";
@@ -1280,6 +1294,22 @@ bool SaveLoadSystem::loadGlobalConfig(GlobalSettings& cfg) {
                 cfg.date_format_us = value.toInt() != 0;
             } else if (key == "health_time_based") {
                 cfg.health_time_based = value.toInt() != 0;
+            } else if (key == "health_display_points") {
+                cfg.health_display_points = value.toInt() != 0;
+            } else if (key == "health_max_points") {
+                int v = value.toInt();
+                if (v < 1) v = HEALTH_DEFAULT_MAX_POINTS;
+                if (v > 65535) v = 65535;
+                cfg.health_max_points = (uint16_t)v;
+            } else if (key == "health_level_scaling") {
+                cfg.health_level_scaling = value.toInt() != 0;
+            } else if (key == "health_level_percent") {
+                cfg.health_level_percent = value.toInt() != 0;
+            } else if (key == "health_level_growth") {
+                int v = value.toInt();
+                if (v < 1) v = 1;
+                if (v > 10000) v = 10000;
+                cfg.health_level_growth = (uint16_t)v;
             } else if (key == "health_wake") {
                 cfg.health_wake_hour = (uint8_t)value.toInt();
             } else if (key == "health_sleep") {

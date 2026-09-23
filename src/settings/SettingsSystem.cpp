@@ -10,6 +10,11 @@ SettingsSystem::SettingsSystem() : scanned_count(0) {
     _settings.wifi_ssid[0] = '\0';
     _settings.wifi_password[0] = '\0';
     _settings.health_time_based = true;
+    _settings.health_display_points = false;
+    _settings.health_max_points = 100;
+    _settings.health_level_scaling = false;
+    _settings.health_level_percent = false;
+    _settings.health_level_growth = 10;
     _settings.health_wake_hour = 8;
     _settings.health_sleep_hour = 22;
     _settings.visual_feedback_enabled = true;

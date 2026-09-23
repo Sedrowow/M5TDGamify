@@ -280,6 +280,29 @@ uint16_t SkillSystem::addXPToSkill(uint16_t skill_id, uint32_t xp_amount) {
     return levels_gained;
 }
 
+uint32_t SkillSystem::removeXPFromSkill(uint16_t skill_id, uint32_t xp_amount) {
+    Skill* skill = getSkill(skill_id);
+    if (!skill || xp_amount == 0) return 0;
+
+    uint64_t total_xp = skill->current_xp;
+    for (uint16_t level = MIN_SKILL_LEVEL; level < skill->level; level++) {
+        total_xp += calculateXPForSkillLevel(level);
+    }
+    uint32_t removed = (xp_amount > total_xp) ? (uint32_t)total_xp : xp_amount;
+    total_xp -= removed;
+
+    skill->level = MIN_SKILL_LEVEL;
+    skill->current_xp = 0;
+    while (skill->level < MAX_SKILL_LEVEL) {
+        uint32_t requirement = calculateXPForSkillLevel(skill->level);
+        if (total_xp < requirement) break;
+        total_xp -= requirement;
+        skill->level++;
+    }
+    skill->current_xp = (uint32_t)total_xp;
+    return removed;
+}
+
 uint16_t SkillSystem::addXPFromTask(uint16_t skill_id, uint32_t player_xp_awarded, uint32_t& skill_xp_awarded,
                                     float skill_xp_multiplier) {
     if (skill_xp_multiplier < 0.01f) {

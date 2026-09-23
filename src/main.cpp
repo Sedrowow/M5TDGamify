@@ -181,6 +181,10 @@ uint8_t alarm_setup_field = 0;      // 0=name,1=hour,2=minute for alarm; 0=name,
 // Help overlay (H key toggles per-screen help)
 bool help_overlay_active = false;
 uint8_t help_page = 0;
+uint8_t detail_scroll_line = 0;
+uint8_t skill_menu_scroll_line = 0;
+uint16_t skill_menu_scroll_skill_id = 0;
+uint32_t skill_menu_scroll_last_ms = 0;
 
 // Battery HUD smoothing and charging reminder state.
 float battery_display_level = 0.0f;
@@ -271,6 +275,9 @@ int32_t profile_money_spent = 0;
 bool manual_health_active = false;
 uint32_t manual_health_last_input_time = 0;
 uint8_t manual_health_input_percent = 100;
+uint16_t manual_health_input_points = HEALTH_DEFAULT_MAX_POINTS;
+uint8_t manual_health_step_index = 2;
+bool manual_health_percent_mode = true;
 
 // UI control scrolling state
 uint8_t control_scroll_offset = 0;
@@ -335,16 +342,22 @@ uint32_t hud_levelup_last_step_ms = 0;
 uint16_t hud_levelup_step_ms = 220;
 uint16_t hud_levelup_sound_ms = 140;
 uint32_t hud_bar_sound_last_ms = 0;
+uint32_t health_flash_last_ms = 0;
+uint8_t health_flash_toggles = 0;
+bool health_flash_visible = true;
+uint8_t last_health_percent = 100;
 
 void triggerFeedback(FeedbackEvent ev);
 void updateHudAnimation();
-void playHealthBarBuzz();
-void playXPBarBuzz();
+void playHealthBarBuzz(uint8_t health_percent);
+void playXPBarBuzz(uint8_t xp_percent);
 void playLevelUpBuzz(uint16_t duration_ms);
 TaskEditorField nextTaskField(const Task* task, TaskEditorField current, int delta);
 String formatDurationValue(uint32_t total_seconds);
 String formatDueDateValue(uint32_t due_date);
 String truncateUiText(const char* text, size_t max_len);
+String wrappedTextLine(const char* text, uint8_t wanted_line, uint8_t max_chars);
+uint16_t blendRgb565(uint16_t from, uint16_t to, float amount);
 String taskRewardItemLabel(const Task& task);
 String taskLinkedSkillsLabel(const Task& task);
 void openTaskDurationOverlay(const Task& task);
@@ -358,6 +371,12 @@ bool taskCategoryFullySelected(const Task& task, uint16_t category_id);
 void toggleTaskCategorySelection(Task& task, uint16_t category_id);
 void toggleTaskSkillSelection(Task& task, uint16_t category_id, uint16_t skill_id);
 void updateBatteryState();
+
+void syncHealthToPlayerLevel() {
+    if (health_system.getPlayerLevel() != level_system.getLevel()) {
+        health_system.updateMaxHealthForLevel(level_system.getLevel());
+    }
+}
 
 void setStatus(const char* message, uint32_t ms = 2500) {
     strncpy(status_line, message, sizeof(status_line) - 1);
@@ -473,26 +492,22 @@ void triggerFeedback(FeedbackEvent ev) {
     }
 }
 
-void playHealthBarBuzz() {
+void playHealthBarBuzz(uint8_t health_percent) {
     const GlobalSettings& cfg = settings_system.settings();
     if (!cfg.audio_feedback_enabled) return;
     uint8_t spk_vol = (uint8_t)((uint16_t)cfg.audio_volume * 255 / 100);
     M5Cardputer.Speaker.setVolume(spk_vol);
-    // Low triangle-like buzz: up then down.
-    M5Cardputer.Speaker.tone(170, 28);
-    M5Cardputer.Speaker.tone(220, 24);
-    M5Cardputer.Speaker.tone(170, 28);
+    uint16_t pitch = 150 + (uint16_t)health_percent * 3;
+    M5Cardputer.Speaker.tone(pitch, 45);
 }
 
-void playXPBarBuzz() {
+void playXPBarBuzz(uint8_t xp_percent) {
     const GlobalSettings& cfg = settings_system.settings();
     if (!cfg.audio_feedback_enabled) return;
     uint8_t spk_vol = (uint8_t)((uint16_t)cfg.audio_volume * 255 / 100);
     M5Cardputer.Speaker.setVolume(spk_vol);
-    // Saw-like buzz: rising steps.
-    M5Cardputer.Speaker.tone(380, 20);
-    M5Cardputer.Speaker.tone(520, 20);
-    M5Cardputer.Speaker.tone(680, 20);
+    uint16_t pitch = 380 + (uint16_t)xp_percent * 7;
+    M5Cardputer.Speaker.tone(pitch, 45);
 }
 
 void playLevelUpBuzz(uint16_t duration_ms) {
@@ -518,12 +533,30 @@ void updateHudAnimation() {
     // Bar-change buzz while bar is animating.
     if (millis() - hud_bar_sound_last_ms > 120) {
         if (fabsf(target_health - hud_health_anim) > 0.8f) {
-            playHealthBarBuzz();
+            playHealthBarBuzz((uint8_t)target_health);
             hud_bar_sound_last_ms = millis();
         } else if (fabsf(target_level - hud_level_anim) > 0.8f) {
-            playXPBarBuzz();
+            playXPBarBuzz((uint8_t)target_level);
             hud_bar_sound_last_ms = millis();
         }
+    }
+
+    uint8_t health_percent = health_system.getHealth();
+    if (health_percent != last_health_percent) {
+        if (health_percent > 20) {
+            health_flash_toggles = 0;
+            health_flash_visible = true;
+        } else if (last_health_percent > 20 || (health_percent <= 5 && last_health_percent > 5)) {
+            health_flash_toggles = health_percent <= 5 ? 1 : 20;
+            health_flash_last_ms = millis();
+        }
+        last_health_percent = health_percent;
+    }
+    if (health_percent <= 20 && millis() - health_flash_last_ms >= (health_percent <= 5 ? 320 : 90)) {
+        health_flash_last_ms = millis();
+        health_flash_visible = !health_flash_visible;
+        if (health_percent > 5 && health_flash_toggles > 0) health_flash_toggles--;
+        if (health_percent > 5 && health_flash_toggles == 0) health_flash_visible = true;
     }
 
     // Per-level XP animation and sound (instead of instant jump).
@@ -1176,6 +1209,7 @@ bool loadAllProfileData() {
     }
 
     loadShopData();
+    syncHealthToPlayerLevel();
     normalizeTaskSelection();
     normalizeSkillSelection();
     normalizeShopSelection();
@@ -1491,6 +1525,43 @@ String truncateUiText(const char* text, size_t max_len) {
     return out.substring(0, max_len > 3 ? (int)max_len - 3 : 0) + "...";
 }
 
+uint16_t blendRgb565(uint16_t from, uint16_t to, float amount) {
+    if (amount < 0.0f) amount = 0.0f;
+    if (amount > 1.0f) amount = 1.0f;
+    uint8_t fr = (uint8_t)(((from >> 11) & 0x1F) * 255 / 31);
+    uint8_t fg = (uint8_t)(((from >> 5) & 0x3F) * 255 / 63);
+    uint8_t fb = (uint8_t)((from & 0x1F) * 255 / 31);
+    uint8_t tr = (uint8_t)(((to >> 11) & 0x1F) * 255 / 31);
+    uint8_t tg = (uint8_t)(((to >> 5) & 0x3F) * 255 / 63);
+    uint8_t tb = (uint8_t)((to & 0x1F) * 255 / 31);
+    uint8_t r = (uint8_t)(fr + (tr - fr) * amount);
+    uint8_t g = (uint8_t)(fg + (tg - fg) * amount);
+    uint8_t b = (uint8_t)(fb + (tb - fb) * amount);
+    return (uint16_t)(((r * 31 / 255) << 11) | ((g * 63 / 255) << 5) | (b * 31 / 255));
+}
+
+String wrappedTextLine(const char* text, uint8_t wanted_line, uint8_t max_chars) {
+    if (!text || max_chars == 0) return String("");
+    String source(text);
+    uint16_t cursor = 0;
+    uint8_t line = 0;
+    while (cursor < source.length()) {
+        while (cursor < source.length() && (source[cursor] == ' ' || source[cursor] == '\n')) cursor++;
+        if (cursor >= source.length()) break;
+        uint16_t remaining = source.length() - cursor;
+        uint16_t width = remaining < max_chars ? remaining : max_chars;
+        uint16_t end = cursor + width;
+        if (end < source.length()) {
+            int16_t split = source.lastIndexOf(' ', end - 1);
+            if (split >= (int16_t)cursor) end = split;
+        }
+        if (line == wanted_line) return source.substring(cursor, end);
+        cursor = end;
+        line++;
+    }
+    return String("");
+}
+
 String taskRewardItemLabel(const Task& task) {
     if (task.reward_item_id == 0) return String("No item");
     const ShopItem* item = shop_system.getItem(task.reward_item_id);
@@ -1774,6 +1845,7 @@ void completeTaskAtIndex(uint16_t task_index) {
     profile_tasks_completed++;
     profile_money_gained += (int32_t)money_gain;
 
+    syncHealthToPlayerLevel();
     saveAllProfileData();
 
     triggerFeedback(FEEDBACK_TASK_COMPLETE);
@@ -1975,6 +2047,8 @@ void handleNavCommand(NavCommand cmd) {
 
     if (overlay_mode == OVERLAY_SKILL_DETAILS || overlay_mode == OVERLAY_ITEM_DETAILS) {
         if (cmd == NAV_BACK || cmd == NAV_SELECT) overlay_mode = OVERLAY_NONE;
+        else if (cmd == NAV_UP && detail_scroll_line > 0) detail_scroll_line--;
+        else if (cmd == NAV_DOWN && detail_scroll_line < 12) detail_scroll_line++;
         return;
     }
 
@@ -2041,18 +2115,7 @@ void handleNavCommand(NavCommand cmd) {
                     if (skill_xp_edit_value >= 0) {
                         skill_system.addXPToSkill(sk->id, (uint32_t)skill_xp_edit_value);
                     } else {
-                        uint32_t remove_amt = (uint32_t)(-skill_xp_edit_value);
-                        sk->current_xp = (sk->current_xp >= remove_amt) ? sk->current_xp - remove_amt : 0;
-                        // Recompute level/current_xp without touching lifetime_xp.
-                        // Save lifetime_xp, reset level, re-apply remaining XP via addXPToSkill,
-                        // then restore the original lifetime_xp so removals don't inflate it.
-                        uint32_t saved_lifetime = sk->lifetime_xp;
-                        uint32_t remaining = sk->current_xp;
-                        sk->level = 1;
-                        sk->current_xp = 0;
-                        sk->lifetime_xp = 0;  // addXPToSkill will add to this; we'll overwrite
-                        if (remaining > 0) skill_system.addXPToSkill(sk->id, remaining);
-                        sk->lifetime_xp = saved_lifetime;  // restore: removal doesn't change lifetime
+                        skill_system.removeXPFromSkill(sk->id, (uint32_t)(-skill_xp_edit_value));
                     }
                     saveSkills();
                     setStatus("Skill XP updated");
@@ -2308,7 +2371,8 @@ void handleNavCommand(NavCommand cmd) {
     }
 
     if (overlay_mode == OVERLAY_SHOP_EFFECT_PICK) {
-        static const uint8_t EFFECT_COUNT = 5;
+        static const uint8_t EFFECT_COUNT = 6;
+        static const char* effect_names[6] = {"None/Collectible", "Consume & Remove", "Add XP", "Random XP", "Countdown", "Max HP +/-"};
         if (cmd == NAV_UP && shop_effect_pick_index > 0) shop_effect_pick_index--;
         else if (cmd == NAV_DOWN && shop_effect_pick_index + 1 < EFFECT_COUNT) shop_effect_pick_index++;
         else if (cmd == NAV_SELECT) {
@@ -2334,7 +2398,16 @@ void handleNavCommand(NavCommand cmd) {
         static const int32_t price_steps[5] = {1, 10, 100, 1000, 10000};
         int32_t step = price_steps[shop_num_edit_step_index];
         if (cmd == NAV_UP) shop_num_edit_value += step;
-        else if (cmd == NAV_DOWN) { shop_num_edit_value -= step; if (shop_num_edit_value < 0) shop_num_edit_value = 0; }
+        else if (cmd == NAV_DOWN) {
+            shop_num_edit_value -= step;
+            bool allow_negative = false;
+            if (shop_num_edit_target == SHOP_NUM_EFFECT_VALUE) {
+                const ShopItem* selected_item = shop_system.getItemByActiveIndex(selected_shop_item_index);
+                allow_negative = selected_item && selected_item->effect_type == ITEM_EFFECT_MAX_HEALTH;
+            }
+            if (!allow_negative && shop_num_edit_value < 0) shop_num_edit_value = 0;
+            if (allow_negative && shop_num_edit_value < -100000) shop_num_edit_value = -100000;
+        }
         else if (cmd == NAV_LEFT && shop_num_edit_step_index > 0) shop_num_edit_step_index--;
         else if (cmd == NAV_RIGHT && shop_num_edit_step_index < 4) shop_num_edit_step_index++;
         else if (cmd == NAV_SELECT) {
@@ -2639,7 +2712,7 @@ void handleNavCommand(NavCommand cmd) {
                 } else if (cmd == NAV_DOWN) {
                     if (cat && selected_skill_index + 1 < skill_system.getActiveSkillCountInCategory(cat->id)) selected_skill_index++;
                 } else if (cmd == NAV_SELECT) {
-                    if (sk) overlay_mode = OVERLAY_SKILL_DETAILS;
+                    if (sk) { detail_scroll_line = 0; overlay_mode = OVERLAY_SKILL_DETAILS; }
                 }
             }
             break;
@@ -2722,7 +2795,8 @@ void handleNavCommand(NavCommand cmd) {
                     if (!it->active || shop_system.getInventoryQuantity(it->id) == 0) continue;
                     if (found == selected_inventory_item_index) {
                         uint32_t xp_before = level_system.getLifetimeXP();
-                        if (shop_system.useItem(it->id, level_system, millis() / 1000)) {
+                        if (shop_system.useItem(it->id, level_system, health_system, millis() / 1000)) {
+                            syncHealthToPlayerLevel();
                             saveAllProfileData();
                             uint32_t xp_gained = level_system.getLifetimeXP() - xp_before;
                             if (xp_gained > 0) {
@@ -3167,7 +3241,7 @@ void handleKeyInput(char key) {
     }
 
     // G0 keyboard key triggers screensaver
-    if (key == 'g' || key == 'G') {
+    if ((key == 'g' || key == 'G') && !(current_screen == UI_SETTINGS && sett_section == SETT_HEALTH)) {
         if (!screensaver_active) {
             screensaver_active = true;
             screensaver_anim_time = millis();
@@ -3220,9 +3294,12 @@ void handleKeyInput(char key) {
         overlay_mode = OVERLAY_NONE;
         help_overlay_active = false;
         manual_health_active = true;
-        manual_health_input_percent = (uint8_t)health_system.getHealth();
+        manual_health_percent_mode = !settings_system.settings().health_display_points;
+        manual_health_input_percent = health_system.getHealth();
+        manual_health_input_points = health_system.getHealthPoints();
+        manual_health_step_index = 2;
         manual_health_last_input_time = millis();
-        setStatus("Health mode: 1-0 set%, -/= adjust, ENT confirm", 2000);
+        setStatus(manual_health_percent_mode ? "Health: 1-0 %, -/= adjust, ENT" : "Health: -/= adjust, SPC=%, ENT", 2000);
         return;
     }
 
@@ -3394,6 +3471,7 @@ void handleKeyInput(char key) {
                     const ShopItem* inv_it = shop_system.itemsRaw() + i;
                     if (!inv_it->active || shop_system.getInventoryQuantity(inv_it->id) == 0) continue;
                     if (found == selected_inventory_item_index) {
+                        detail_scroll_line = 0;
                         overlay_mode = OVERLAY_ITEM_DETAILS;
                         break;
                     }
@@ -3416,6 +3494,31 @@ void handleKeyInput(char key) {
                     save_load_system.saveGlobalConfig(cfg);
                     setStatus(cfg.date_format_us ? "Date MM/DD" : "Date DD/MM", 1200);
                 }
+            } else if (sett_section == SETT_HEALTH && (key == 'p' || key == 'P')) {
+                GlobalSettings& cfg = settings_system.settings();
+                cfg.health_display_points = !cfg.health_display_points;
+                save_load_system.saveGlobalConfig(cfg);
+                setStatus(cfg.health_display_points ? "HP display: points" : "HP display: percent", 1200);
+            } else if (sett_section == SETT_HEALTH && (key == 'g' || key == 'G')) {
+                GlobalSettings& cfg = settings_system.settings();
+                cfg.health_level_scaling = !cfg.health_level_scaling;
+                health_system.configureLevelScaling(cfg.health_level_scaling, cfg.health_level_percent, cfg.health_level_growth);
+                save_load_system.saveGlobalConfig(cfg);
+                setStatus(cfg.health_level_scaling ? "Level HP growth ON" : "Level HP growth OFF", 1200);
+            } else if (sett_section == SETT_HEALTH && (key == 'm' || key == 'M')) {
+                GlobalSettings& cfg = settings_system.settings();
+                cfg.health_level_percent = !cfg.health_level_percent;
+                health_system.configureLevelScaling(cfg.health_level_scaling, cfg.health_level_percent, cfg.health_level_growth);
+                save_load_system.saveGlobalConfig(cfg);
+                setStatus(cfg.health_level_percent ? "HP growth: percent" : "HP growth: points", 1200);
+            } else if (sett_section == SETT_HEALTH && (key == '+' || key == '=' || key == '-')) {
+                GlobalSettings& cfg = settings_system.settings();
+                uint16_t maximum = cfg.health_level_percent ? 100 : 10000;
+                if (key == '-' && cfg.health_level_growth > 1) cfg.health_level_growth--;
+                else if (key != '-' && cfg.health_level_growth < maximum) cfg.health_level_growth++;
+                health_system.configureLevelScaling(cfg.health_level_scaling, cfg.health_level_percent, cfg.health_level_growth);
+                save_load_system.saveGlobalConfig(cfg);
+                setStatus("HP growth value updated", 900);
             }
             break;
 
@@ -3532,23 +3635,31 @@ void renderUI() {
     updateHudAnimation();
     uint8_t lvlw = (uint8_t)((hud_level_anim / 100.0f) * 100.0f);
     uint8_t hpw = (uint8_t)((hud_health_anim / 100.0f) * 100.0f);
+    uint8_t current_hp_percent = health_system.getHealth();
+    uint16_t xp_bar_color = 0x021F;
+    uint16_t hp_bar_color = blendRgb565(0x03A0, 0x8410, 1.0f - current_hp_percent / 100.0f);
     ui_canvas.drawRoundRect(140, 2, 98, 8, 2, BLACK);
-    ui_canvas.fillRoundRect(142, 4, (lvlw * 94) / 100, 4, 1, 0x07E0);
+    ui_canvas.fillRoundRect(142, 4, (lvlw * 94) / 100, 4, 1, xp_bar_color);
     ui_canvas.drawRoundRect(140, 11, 98, 8, 2, BLACK);
-    ui_canvas.fillRoundRect(142, 13, (hpw * 94) / 100, 4, 1, 0xF800);
+    ui_canvas.fillRoundRect(142, 13, (hpw * 94) / 100, 4, 1, hp_bar_color);
     
     // XP text on level bar (transparent background)
     ui_canvas.setTextColor(0xFFFF);
+        ui_canvas.setTextColor(hud_level_anim >= 85.0f ? 0x07E0 : 0xFFFF);
     ui_canvas.setTextSize(1);
     ui_canvas.setCursor(145, 3);
     ui_canvas.printf("XP %3d%%", (int)hud_level_anim);
     
     // Health percentage when in manual health input mode (transparent)
-    if (manual_health_active) {
-        ui_canvas.setTextColor(0xF81F);  // Red/magenta for visibility
-        ui_canvas.setCursor(145, 12);
-        ui_canvas.printf("%d%%", manual_health_input_percent);
-    }
+    // HP text is drawn on top of the HP bar with a color that stays readable.
+    bool hp_warning = current_hp_percent == 0 ||
+        (current_hp_percent <= 20 && health_flash_visible);
+    ui_canvas.setTextColor(hp_warning ? 0xF800 : 0xFFFF);
+    ui_canvas.setCursor(145, 12);
+    if (settings_system.settings().health_display_points)
+        ui_canvas.printf("HP %d/%d", health_system.getHealthPoints(), health_system.getMaxHealthPoints());
+    else
+        ui_canvas.printf("HP %d%%", current_hp_percent);
 
     // Date/time source + battery.
     String ts = time_sync.getCurrentTimeString();
@@ -3627,7 +3738,7 @@ void renderUI() {
     if (screen_selector_active) {
         scroll_text += ";/.:Move  ENT:Select  `:Close  TAB:Menu";
     } else if (manual_health_active) {
-        scroll_text += "1-0:Set  -=Down  =:Up  ENT:Apply  `:Cancel  TAB:Menu";
+        scroll_text += manual_health_percent_mode ? "1-0:Set%  -=Down  =:Up  SPC:Points  ENT:Apply  `:Cancel" : "-=:HP  ,/.Step  SPC:%  ENT:Apply  `:Cancel";
     } else if (text_input_active) {
         scroll_text += "Type text  DEL:Erase  ENT:Save  `:Cancel  TAB:Menu";
     } else if (current_screen == UI_DASHBOARD) {
@@ -3636,7 +3747,7 @@ void renderUI() {
         if (task_edit_mode) scroll_text += ",/:Field  ;/.:Value  SPC:Detail  ENT:Save  E:ExitEdit  TAB:Menu";
         else scroll_text += ";/.:Select  ENT:Done  E:Edit  N:New  D:Delete  T:Details  TAB:Menu";
     } else if (current_screen == UI_SKILLS) {
-        scroll_text += ",/:Category  ;/.:Skill  E:Edit  SPC:Menu(AddCat/AddSkill/XP/Chart)  TAB:Menu";
+        scroll_text += ",/:Category  ;/.:Skill  E:Edit  SPC:Menu  TAB:Menu";
     } else if (current_screen == UI_SHOP) {
         scroll_text += ";/.:Select  ,/:Focus  ENT:BuyCraft  Z:Setup  N:Add  R:Recipe  TAB:Menu";
     } else if (current_screen == UI_PROFILES) {
@@ -3843,11 +3954,11 @@ void renderUI() {
             static const char* recipe_fields[10] = {"Add Recipe", "Remove Recipe", "Slot1 Item", "Slot1 Qty", "Slot2 Item", "Slot2 Qty", "Slot3 Item", "Slot3 Qty", "Output Item", "Output Qty"};
             const char** fields = shop_edit_is_recipe ? recipe_fields : item_fields;
             uint8_t field_count = shop_edit_is_recipe ? 10 : 9;
-            uint8_t window = 7;
-            uint8_t start_idx = (shop_field_menu_index > 3) ? (uint8_t)(shop_field_menu_index - 3) : 0;
+            uint8_t window = 5;
+            uint8_t start_idx = (shop_field_menu_index > 2) ? (uint8_t)(shop_field_menu_index - 2) : 0;
             if (start_idx + window > field_count) start_idx = field_count > window ? (uint8_t)(field_count - window) : 0;
             ui_canvas.setCursor(24, 40);
-            ui_canvas.println(shop_edit_is_recipe ? "EDIT RECIPE" : "EDIT ITEM");
+            ui_canvas.printf("EDIT %s  %d/%d", shop_edit_is_recipe ? "RECIPE" : "ITEM", shop_field_menu_index + 1, field_count);
             for (uint8_t i = 0; i < window; i++) {
                 uint8_t idx = start_idx + i;
                 if (idx >= field_count) break;
@@ -3858,24 +3969,22 @@ void renderUI() {
                 ui_canvas.setCursor(28, 53 + i * 10);
                 ui_canvas.print(fields[idx]);
             }
-            ui_canvas.setTextColor(muted, panel);
-            ui_canvas.setCursor(24, 106);
-            ui_canvas.println(";/.:move  ENT:select  `:back");
         } else if (overlay_mode == OVERLAY_SHOP_EFFECT_PICK) {
-            static const char* effect_names[5] = {"None/Collectible", "Consume & Remove", "Add XP", "Random XP", "Countdown"};
+            static const char* effect_names[6] = {"None/Collectible", "Consume & Remove", "Add XP", "Random XP", "Countdown", "Max HP +/-"};
             ui_canvas.setCursor(24, 40);
-            ui_canvas.println("EFFECT TYPE");
+            ui_canvas.printf("EFFECT TYPE  %d/6", shop_effect_pick_index + 1);
+            uint8_t start_effect = shop_effect_pick_index > 2 ? shop_effect_pick_index - 2 : 0;
+            if (start_effect + 5 > 6) start_effect = 1;
             for (uint8_t i = 0; i < 5; i++) {
-                uint16_t row_bg = (i == shop_effect_pick_index) ? accent : bg;
-                uint16_t row_fg = (i == shop_effect_pick_index) ? BLACK : text;
+                uint8_t index = start_effect + i;
+                if (index >= 6) break;
+                uint16_t row_bg = (index == shop_effect_pick_index) ? accent : bg;
+                uint16_t row_fg = (index == shop_effect_pick_index) ? BLACK : text;
                 ui_canvas.fillRoundRect(24, 52 + i * 12, 192, 10, 2, row_bg);
                 ui_canvas.setTextColor(row_fg, row_bg);
                 ui_canvas.setCursor(28, 53 + i * 12);
-                ui_canvas.print(effect_names[i]);
+                ui_canvas.print(effect_names[index]);
             }
-            ui_canvas.setTextColor(muted, panel);
-            ui_canvas.setCursor(24, 106);
-            ui_canvas.println(";/.:move  ENT:select  `:back");
         } else if (overlay_mode == OVERLAY_SHOP_PRICE_EDIT) {
             static const int32_t p_steps[5] = {1, 10, 100, 1000, 10000};
             static const char* num_labels[6] = {"Base Price", "Buy Limit", "Cooldown (s)", "Ingr. Qty", "Output Qty", "Effect Value"};
@@ -3933,19 +4042,21 @@ void renderUI() {
             static const char* sk_fields[8]  = {"Rename Skill", "Edit Details", "Add Skill", "Rename Category", "Add Category", "Edit Skill XP", "Edit Main XP", "Delete Skill"};
             const char** fields = skill_edit_is_category ? cat_fields : sk_fields;
             uint8_t field_count = skill_edit_is_category ? 5 : 8;
+            uint8_t window = 5;
+            uint8_t start_idx = (skill_field_menu_index > 2) ? (uint8_t)(skill_field_menu_index - 2) : 0;
+            if (start_idx + window > field_count) start_idx = field_count > window ? (uint8_t)(field_count - window) : 0;
             ui_canvas.setCursor(24, 36);
-            ui_canvas.println(skill_edit_is_category ? "CATEGORY EDIT" : "SKILL EDIT");
-            for (uint8_t i = 0; i < field_count; i++) {
-                uint16_t row_bg = (i == skill_field_menu_index) ? accent : bg;
-                uint16_t row_fg = (i == skill_field_menu_index) ? BLACK : text;
+            ui_canvas.printf("%s EDIT  %d/%d", skill_edit_is_category ? "CATEGORY" : "SKILL", skill_field_menu_index + 1, field_count);
+            for (uint8_t i = 0; i < window; i++) {
+                uint8_t idx = start_idx + i;
+                if (idx >= field_count) break;
+                uint16_t row_bg = (idx == skill_field_menu_index) ? accent : bg;
+                uint16_t row_fg = (idx == skill_field_menu_index) ? BLACK : text;
                 ui_canvas.fillRoundRect(24, 47 + i * 11, 192, 10, 2, row_bg);
                 ui_canvas.setTextColor(row_fg, row_bg);
                 ui_canvas.setCursor(28, 48 + i * 11);
-                ui_canvas.print(fields[i]);
+                ui_canvas.print(fields[idx]);
             }
-            ui_canvas.setTextColor(muted, panel);
-            ui_canvas.setCursor(24, 115);
-            ui_canvas.println(";/.:move  ENT:select  `:back");
         } else if (overlay_mode == OVERLAY_SKILL_DELETE_CONFIRM) {
             const char* del_what = skill_delete_is_category ? "CATEGORY" : "SKILL";
             String del_name = "?";
@@ -4130,10 +4241,14 @@ void renderUI() {
             ui_canvas.printf("Level %d  XP %d%%", detail_skill ? detail_skill->level : 0,
                              detail_skill ? skill_system.getSkillXPProgress(detail_skill->id) : 0);
             ui_canvas.setCursor(16, 72);
-            ui_canvas.printf("%.34s", detail_skill && detail_skill->details[0] ? detail_skill->details : "No description saved.");
+            const char* skill_description = detail_skill && detail_skill->details[0] ? detail_skill->details : "No description saved.";
+            for (uint8_t line = 0; line < 4; line++) {
+                ui_canvas.setCursor(16, 72 + line * 10);
+                ui_canvas.print(wrappedTextLine(skill_description, detail_scroll_line + line, 34));
+            }
             ui_canvas.setTextColor(muted, panel);
-            ui_canvas.setCursor(16, 108);
-            ui_canvas.println("Space/Enter/Esc: close");
+            ui_canvas.setCursor(16, 114);
+            ui_canvas.println("Up/Down: scroll  Enter: close");
         } else if (overlay_mode == OVERLAY_ITEM_DETAILS) {
             const ShopItem* detail_item = nullptr;
             uint16_t found_item = 0;
@@ -4149,10 +4264,14 @@ void renderUI() {
             ui_canvas.setCursor(16, 56);
             ui_canvas.printf("Owned: x%d", detail_item ? shop_system.getInventoryQuantity(detail_item->id) : 0);
             ui_canvas.setCursor(16, 72);
-            ui_canvas.printf("%.34s", detail_item && detail_item->description[0] ? detail_item->description : "No description saved.");
+            const char* item_description = detail_item && detail_item->description[0] ? detail_item->description : "No description saved.";
+            for (uint8_t line = 0; line < 4; line++) {
+                ui_canvas.setCursor(16, 72 + line * 10);
+                ui_canvas.print(wrappedTextLine(item_description, detail_scroll_line + line, 34));
+            }
             ui_canvas.setTextColor(muted, panel);
-            ui_canvas.setCursor(16, 108);
-            ui_canvas.println("Space/Enter/Esc: close");
+            ui_canvas.setCursor(16, 114);
+            ui_canvas.println("Up/Down: scroll  Enter: close");
         } else if (overlay_mode == OVERLAY_BATTERY_LOW) {
             ui_canvas.setTextColor(0xF800, panel);
             ui_canvas.setCursor(18, 42);
@@ -4174,10 +4293,11 @@ void renderUI() {
     if (manual_health_active) {
         // Manual health input display with larger text for readability
         ui_canvas.setTextSize(2);
-        ui_canvas.printf("Health: %d%%\n", manual_health_input_percent);
+        if (manual_health_percent_mode) ui_canvas.printf("Health: %d%%\n", manual_health_input_percent);
+        else ui_canvas.printf("Health: %d/%d\n", manual_health_input_points, health_system.getMaxHealthPoints());
         ui_canvas.setTextSize(1);
-        ui_canvas.println("1-9: 10-90%   0: 100%");
-        ui_canvas.println("-: down   =: up   `: cancel");
+        ui_canvas.println(manual_health_percent_mode ? "1-9: 10-90%   0: 100%" : "- / +: change   ,/. step");
+        ui_canvas.println(manual_health_percent_mode ? "- / +: change   SPC: points" : "SPC: percent");
         ui_canvas.setTextColor(muted, panel);
         ui_canvas.setCursor(6, 104);
         ui_canvas.setTextSize(1);
@@ -4314,9 +4434,19 @@ void renderUI() {
                 ui_canvas.setTextColor(muted, bg);
                 ui_canvas.setCursor(4, bar_y + 8);
                 ui_canvas.printf("XP %lu/%lu", (unsigned long)sk->current_xp, (unsigned long)xp_need);
+                if (skill_menu_scroll_skill_id != sk->id) {
+                    skill_menu_scroll_skill_id = sk->id;
+                    skill_menu_scroll_line = 0;
+                    skill_menu_scroll_last_ms = millis();
+                }
+                if (!skill_edit_mode && sk->details[0] && millis() - skill_menu_scroll_last_ms >= 1400) {
+                    skill_menu_scroll_last_ms = millis();
+                    if (wrappedTextLine(sk->details, skill_menu_scroll_line + 1, 9).length() > 0) skill_menu_scroll_line++;
+                    else skill_menu_scroll_line = 0;
+                }
                 ui_canvas.setCursor(166, 108);
                 ui_canvas.setTextColor(muted, bg);
-                ui_canvas.printf("%.11s", sk->details[0] ? sk->details : "No details");
+                ui_canvas.printf("D:%.9s", wrappedTextLine(sk->details[0] ? sk->details : "No details", skill_menu_scroll_line, 9).c_str());
             }
         }
         ui_canvas.setTextColor(muted, bg);
@@ -4353,7 +4483,10 @@ void renderUI() {
         if (shop_focus_items && it) {
             ui_canvas.printf("Item: %s\n", truncateUiText(it->name, 20).c_str());
             ui_canvas.printf("$%ld  buy_limit:%d\n", (long)it->current_price, (int)it->buy_limit);
-            ui_canvas.printf("Effect:%d val:%lu\n", (int)it->effect_type, (unsigned long)it->effect_value);
+            if (it->effect_type == ITEM_EFFECT_MAX_HEALTH)
+                ui_canvas.printf("Effect:Max HP %+ld\n", (long)(int32_t)it->effect_value);
+            else
+                ui_canvas.printf("Effect:%d val:%lu\n", (int)it->effect_type, (unsigned long)it->effect_value);
             ui_canvas.printf("Desc: %s\n", truncateUiText(it->description, 22).c_str());
         } else if (!shop_focus_items && rc) {
             const ShopItem* out_it = shop_system.getItem(rc->output_item_id);
@@ -4563,9 +4696,12 @@ void renderUI() {
         } else if (sett_section == SETT_HEALTH) {
             const GlobalSettings& cfg = settings_system.settings();
             ui_canvas.printf("Mode:%s\n", cfg.health_time_based ? "time-based" : "manual");
+            ui_canvas.printf("Display:%s  Base:%d\n", cfg.health_display_points ? "points" : "percent", health_system.getBaseMaxHealthPoints());
+            ui_canvas.printf("Growth:%s %s%d\n", cfg.health_level_scaling ? "ON" : "OFF",
+                             cfg.health_level_percent ? "+%" : "+", cfg.health_level_growth);
             ui_canvas.printf("Wake:%02d:00 Sleep:%02d:00\n", cfg.health_wake_hour, cfg.health_sleep_hour);
             ui_canvas.println("Enter toggle mode");
-            ui_canvas.println(";/.: wake  ,/: sleep");
+            ui_canvas.println("P:display G:scaling M:%growth +/-:value");
         } else if (sett_section == SETT_RAND_TASK) {
             ui_canvas.println("Generate a random task");
             ui_canvas.println("with random name/desc/");
@@ -4756,6 +4892,7 @@ void renderUI() {
         } else if (current_screen == UI_SETTINGS) {
             ui_canvas.println("SETTINGS sections:");
             ui_canvas.println("WiFi: LEFT=saved/scan, ENT=connect");
+            ui_canvas.println("Health: P toggles points or percent");
             ui_canvas.println("Skill XP: ratio% + split option");
             ui_canvas.println(",/=prev/next section");
         } else if (current_screen == UI_ALARMS) {
@@ -4836,6 +4973,8 @@ void setup() {
         time_sync.setTimezoneOffset(cfg.timezone_offset);
         time_sync.setDaylightSavingEnabled(cfg.timezone_dst);
         time_sync.setDateFormatUS(cfg.date_format_us);
+        health_system.setMaxHealthPoints(cfg.health_max_points);
+        health_system.configureLevelScaling(cfg.health_level_scaling, cfg.health_level_percent, cfg.health_level_growth);
         if (cfg.health_time_based) {
             health_system.setTimeBasedMode();
             health_system.setTimeBasedCycle(cfg.health_wake_hour, cfg.health_sleep_hour);
@@ -4901,6 +5040,13 @@ void setup() {
         health_system.setTimeBasedMode();
         health_system.setTimeBasedCycle(8, 22);
         cfg.health_time_based = true;
+        cfg.health_display_points = false;
+        cfg.health_max_points = HEALTH_DEFAULT_MAX_POINTS;
+        cfg.health_level_scaling = false;
+        cfg.health_level_percent = false;
+        cfg.health_level_growth = 10;
+        health_system.setMaxHealthPoints(cfg.health_max_points);
+        health_system.configureLevelScaling(cfg.health_level_scaling, cfg.health_level_percent, cfg.health_level_growth);
         cfg.health_wake_hour = 8;
         cfg.health_sleep_hour = 22;
         cfg.timezone_offset = 0;
@@ -4948,6 +5094,7 @@ void setup() {
 void loop() {
     M5Cardputer.update();
     health_system.setCurrentTime(time_sync.getCurrentTime());
+    syncHealthToPlayerLevel();
 
     // Check alarms and snooze re-rings
     {
@@ -5088,7 +5235,7 @@ void loop() {
     }
 
     // Auto-apply manual health after 4 seconds of no input
-    if (manual_health_active && millis() - manual_health_last_input_time > 4000) {
+    if (manual_health_active && manual_health_percent_mode && millis() - manual_health_last_input_time > 4000) {
         uint8_t new_health = (manual_health_input_percent * 100) / 100;
         health_system.setManualHealth(new_health);
         saveAllProfileData();
@@ -5171,40 +5318,60 @@ void loop() {
         // Manual health input handling
         if (manual_health_active) {
             bool handled = false;
-            
-            // Number keys 1-0 for quick health setting
+
+            static const uint16_t health_steps[5] = {1, 10, 100, 1000, 10000};
             for (char ch : ks.word) {
-                if (ch >= '1' && ch <= '9') {
-                    // 1=10%, 2=20%, ... 9=90%
+                if (manual_health_percent_mode && ch >= '1' && ch <= '9') {
                     manual_health_input_percent = (ch - '0') * 10;
-                    manual_health_last_input_time = millis();
                     handled = true;
-                    char msg[32];
-                    snprintf(msg, sizeof(msg), "Health: %d%%", manual_health_input_percent);
-                    setStatus(msg, 1200);
-                } else if (ch == '0') {
-                    // 0 = 100%
+                } else if (manual_health_percent_mode && ch == '0') {
                     manual_health_input_percent = 100;
-                    manual_health_last_input_time = millis();
                     handled = true;
-                    setStatus("Health: 100%", 1200);
                 } else if (ch == '-') {
-                    // Decrease by 1
-                    if (manual_health_input_percent > 0) manual_health_input_percent--;
-                    manual_health_last_input_time = millis();
+                    if (manual_health_percent_mode) {
+                        if (manual_health_input_percent > 0) manual_health_input_percent--;
+                    } else {
+                        uint16_t step = health_steps[manual_health_step_index];
+                        manual_health_input_points = manual_health_input_points > step ? manual_health_input_points - step : 0;
+                    }
                     handled = true;
                 } else if (ch == '=' || ch == '+') {
-                    // Increase by 1
-                    if (manual_health_input_percent < 100) manual_health_input_percent++;
-                    manual_health_last_input_time = millis();
+                    if (manual_health_percent_mode) {
+                        if (manual_health_input_percent < 100) manual_health_input_percent++;
+                    } else {
+                        uint32_t next = (uint32_t)manual_health_input_points + health_steps[manual_health_step_index];
+                        manual_health_input_points = next > health_system.getMaxHealthPoints() ? health_system.getMaxHealthPoints() : (uint16_t)next;
+                    }
                     handled = true;
+                } else if (!manual_health_percent_mode && ch == ',') {
+                    if (manual_health_step_index > 0) manual_health_step_index--;
+                    handled = true;
+                } else if (!manual_health_percent_mode && ch == '.') {
+                    if (manual_health_step_index < 4) manual_health_step_index++;
+                    handled = true;
+                } else if (ch == ' ') {
+                    manual_health_percent_mode = !manual_health_percent_mode;
+                    if (manual_health_percent_mode) {
+                        manual_health_input_percent = (uint8_t)(((uint32_t)manual_health_input_points * 100U + health_system.getMaxHealthPoints() / 2U) / health_system.getMaxHealthPoints());
+                    } else {
+                        manual_health_input_points = (uint16_t)(((uint32_t)manual_health_input_percent * health_system.getMaxHealthPoints() + 50U) / 100U);
+                    }
+                    setStatus(manual_health_percent_mode ? "Percent mode" : "Point mode", 1200);
                 }
             }
-            
+            if (handled) {
+                manual_health_last_input_time = millis();
+                char msg[40];
+                if (manual_health_percent_mode) snprintf(msg, sizeof(msg), "Health: %d%%", manual_health_input_percent);
+                else snprintf(msg, sizeof(msg), "Health: %d/%d (step %d)", manual_health_input_points,
+                              health_system.getMaxHealthPoints(), health_steps[manual_health_step_index]);
+                setStatus(msg, 1200);
+            }
+
             // Exit or confirm manual health
             if (ks.enter) {
-                uint8_t new_health = (manual_health_input_percent * 100) / 100;
-                health_system.setManualHealth(new_health);
+                if (manual_health_percent_mode) health_system.setManualHealth(manual_health_input_percent);
+                else health_system.setManualHealthPoints(manual_health_input_points);
                 saveAllProfileData();
                 manual_health_active = false;
                 setStatus("Health set", 1000);

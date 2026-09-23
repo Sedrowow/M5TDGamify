@@ -2,7 +2,14 @@
 
 HealthSystem::HealthSystem() 
     : mode(HEALTH_MANUAL), 
-      manual_health(100), 
+    manual_health(100),
+    manual_health_points(HEALTH_DEFAULT_MAX_POINTS),
+    max_health_points(HEALTH_DEFAULT_MAX_POINTS),
+    base_max_health_points(HEALTH_DEFAULT_MAX_POINTS),
+    player_level(1),
+    level_scaling_enabled(false),
+    level_scaling_percent(false),
+    level_scaling_growth(10),
       time_based_start_hour(8),    // 8 AM
       time_based_end_hour(22),     // 10 PM
       current_time(0) {}
@@ -50,10 +57,14 @@ uint8_t HealthSystem::calculateTimeBasedHealth() const {
 
 uint8_t HealthSystem::getHealth() const {
     if (mode == HEALTH_MANUAL) {
-        return manual_health;
+        return (uint8_t)(((uint32_t)manual_health_points * 100U + max_health_points / 2U) / max_health_points);
     } else {
         return calculateTimeBasedHealth();
     }
+}
+
+uint16_t HealthSystem::getHealthPoints() const {
+    return (uint16_t)(((uint32_t)getHealth() * max_health_points + 50U) / 100U);
 }
 
 float HealthSystem::getXPMultiplier() const {
@@ -94,6 +105,63 @@ void HealthSystem::setManualMode() {
 void HealthSystem::setManualHealth(uint8_t health) {
     if (health > 100) health = 100;
     manual_health = health;
+    manual_health_points = (uint16_t)(((uint32_t)health * max_health_points + 50U) / 100U);
+}
+
+void HealthSystem::setManualHealthPoints(uint16_t health_points) {
+    if (health_points > max_health_points) health_points = max_health_points;
+    manual_health_points = health_points;
+    manual_health = (uint8_t)(((uint32_t)health_points * 100U + max_health_points / 2U) / max_health_points);
+}
+
+void HealthSystem::setMaxHealthPoints(uint16_t max_points) {
+    if (max_points == 0) max_points = HEALTH_DEFAULT_MAX_POINTS;
+    base_max_health_points = max_points;
+    updateMaxHealthForLevel(player_level);
+}
+
+void HealthSystem::setBaseMaxHealthPoints(uint16_t base_points) {
+    if (base_points == 0) base_points = HEALTH_DEFAULT_MAX_POINTS;
+    base_max_health_points = base_points;
+    updateMaxHealthForLevel(player_level);
+}
+
+void HealthSystem::configureLevelScaling(bool enabled, bool percent, uint16_t growth) {
+    level_scaling_enabled = enabled;
+    level_scaling_percent = percent;
+    level_scaling_growth = growth;
+    updateMaxHealthForLevel(player_level);
+}
+
+void HealthSystem::updateMaxHealthForLevel(uint16_t level) {
+    if (level == 0) level = 1;
+    player_level = level;
+    uint16_t old_max = max_health_points;
+    uint16_t old_points = manual_health_points;
+    uint32_t calculated = base_max_health_points;
+    if (level_scaling_enabled) {
+        if (level_scaling_percent) {
+            for (uint16_t current = 1; current < level && calculated < 65535U; current++) {
+                calculated += (calculated * level_scaling_growth + 50U) / 100U;
+            }
+        } else {
+            calculated += (uint32_t)(level - 1) * level_scaling_growth;
+        }
+    }
+    max_health_points = calculated > 65535U ? 65535U : (uint16_t)calculated;
+    if (old_max > 0 && old_points > 0 && old_max != max_health_points) {
+        manual_health_points = (uint16_t)(((uint32_t)old_points * max_health_points + old_max / 2U) / old_max);
+    }
+    if (manual_health_points > max_health_points) manual_health_points = max_health_points;
+    manual_health = (uint8_t)(((uint32_t)manual_health_points * 100U + max_health_points / 2U) / max_health_points);
+}
+
+void HealthSystem::modifyMaxHealth(int32_t delta) {
+    int32_t updated = (int32_t)base_max_health_points + delta;
+    if (updated < 1) updated = 1;
+    if (updated > 65535) updated = 65535;
+    base_max_health_points = (uint16_t)updated;
+    updateMaxHealthForLevel(player_level);
 }
 
 void HealthSystem::setTimeBasedMode() {
@@ -131,6 +199,13 @@ uint8_t HealthSystem::getCurrentMinute() const {
 void HealthSystem::reset() {
     mode = HEALTH_MANUAL;
     manual_health = 100;
+    manual_health_points = HEALTH_DEFAULT_MAX_POINTS;
+    max_health_points = HEALTH_DEFAULT_MAX_POINTS;
+    base_max_health_points = HEALTH_DEFAULT_MAX_POINTS;
+    player_level = 1;
+    level_scaling_enabled = false;
+    level_scaling_percent = false;
+    level_scaling_growth = 10;
     time_based_start_hour = 8;
     time_based_end_hour = 22;
 }

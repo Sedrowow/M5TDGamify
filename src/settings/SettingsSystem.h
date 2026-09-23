@@ -40,6 +40,11 @@ struct GlobalSettings {
     char wifi_password[MAX_PASSWORD_LEN];
 
     bool health_time_based;
+    bool health_display_points;
+    uint16_t health_max_points;
+    bool health_level_scaling;
+    bool health_level_percent;
+    uint16_t health_level_growth;
     uint8_t health_wake_hour;
     uint8_t health_sleep_hour;
     bool visual_feedback_enabled;

@@ -1,5 +1,6 @@
 #include "ShopSystem.h"
 #include <cstring>
+#include "../health/HealthSystem.h"
 
 ShopSystem::ShopSystem() : item_count(0), recipe_count(0), next_item_id(1), next_recipe_id(1) {
     resetAll();
@@ -304,7 +305,7 @@ bool ShopSystem::craftRecipe(uint16_t recipe_id) {
     return addInventoryItem(recipe->output_item_id, recipe->output_quantity);
 }
 
-bool ShopSystem::useItem(uint16_t item_id, LevelSystem& level_system, uint32_t now_seconds) {
+bool ShopSystem::useItem(uint16_t item_id, LevelSystem& level_system, HealthSystem& health_system, uint32_t now_seconds) {
     ShopItem* item = getItem(item_id);
     if (!item) return false;
     if (getInventoryQuantity(item_id) == 0) return false;
@@ -328,6 +329,9 @@ bool ShopSystem::useItem(uint16_t item_id, LevelSystem& level_system, uint32_t n
             level_system.addXP(random_xp);
             break;
         }
+        case ITEM_EFFECT_MAX_HEALTH:
+            health_system.modifyMaxHealth((int32_t)item->effect_value);
+            break;
         case ITEM_EFFECT_COUNTDOWN:
             // Countdown effect is tracked by user semantics; consume item.
             (void)now_seconds;

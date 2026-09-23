@@ -4,6 +4,8 @@
 #include <Arduino.h>
 #include "../levelsystem/LevelSystem.h"
 
+class HealthSystem;
+
 #define MAX_SHOP_ITEMS 96
 #define MAX_RECIPES 96
 #define MAX_INVENTORY_STACKS 128
@@ -16,7 +18,8 @@ enum ItemEffectType {
     ITEM_EFFECT_CONSUME_REMOVE = 1,
     ITEM_EFFECT_ADD_XP = 2,
     ITEM_EFFECT_RANDOM_XP = 3,
-    ITEM_EFFECT_COUNTDOWN = 4
+    ITEM_EFFECT_COUNTDOWN = 4,
+    ITEM_EFFECT_MAX_HEALTH = 5
 };
 
 struct ShopItem {
@@ -123,7 +126,7 @@ public:
     bool canCraftRecipe(uint16_t recipe_id) const;
     bool craftRecipe(uint16_t recipe_id);
 
-    bool useItem(uint16_t item_id, LevelSystem& level_system, uint32_t now_seconds);
+    bool useItem(uint16_t item_id, LevelSystem& level_system, HealthSystem& health_system, uint32_t now_seconds);
 
     uint16_t getItemCountRaw() const { return item_count; }
     uint16_t getRecipeCountRaw() const { return recipe_count; }

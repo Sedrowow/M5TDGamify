@@ -6,6 +6,7 @@
 
 #define HEALTH_MIN 0
 #define HEALTH_MAX 100
+#define HEALTH_DEFAULT_MAX_POINTS 100
 
 /**
  * Health Mode determines how health is calculated
@@ -31,7 +32,14 @@ enum HealthMode {
 class HealthSystem {
 private:
     HealthMode mode;
-    uint8_t manual_health;              // Manual health level (0-100)
+    uint8_t manual_health;              // Manual health level (0-100), kept for compatibility
+    uint16_t manual_health_points;
+    uint16_t max_health_points;
+    uint16_t base_max_health_points;
+    uint16_t player_level;
+    bool level_scaling_enabled;
+    bool level_scaling_percent;
+    uint16_t level_scaling_growth;
     time_t time_based_start_hour;       // Start of day (hour 0-23)
     time_t time_based_end_hour;         // End of day (hour 0-23)
     time_t current_time;                // Current Unix timestamp
@@ -84,6 +92,16 @@ public:
      * Set health manually (0-100)
      */
     void setManualHealth(uint8_t health);
+    void setManualHealthPoints(uint16_t health_points);
+    uint16_t getHealthPoints() const;
+    uint16_t getMaxHealthPoints() const { return max_health_points; }
+    void setMaxHealthPoints(uint16_t max_points);
+    uint16_t getBaseMaxHealthPoints() const { return base_max_health_points; }
+    void setBaseMaxHealthPoints(uint16_t base_points);
+    void configureLevelScaling(bool enabled, bool percent, uint16_t growth);
+    void updateMaxHealthForLevel(uint16_t level);
+    void modifyMaxHealth(int32_t delta);
+    uint16_t getPlayerLevel() const { return player_level; }
 
     /**
      * Get manual health setting
