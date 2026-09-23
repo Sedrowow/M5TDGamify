@@ -123,7 +123,10 @@ enum OverlayMode {
     OVERLAY_TIMER_SETUP = 18,
     // Alarm/Timer actively ringing (buzz until dismissed)
     OVERLAY_ALARM_RINGING = 19,
-    OVERLAY_TIMER_RINGING = 20
+    OVERLAY_TIMER_RINGING = 20,
+    OVERLAY_SKILL_DETAILS = 21,
+    OVERLAY_ITEM_DETAILS = 22,
+    OVERLAY_BATTERY_LOW = 23
 };
 
 UiScreen current_screen = UI_DASHBOARD;
@@ -177,6 +180,16 @@ uint8_t alarm_setup_field = 0;      // 0=name,1=hour,2=minute for alarm; 0=name,
 
 // Help overlay (H key toggles per-screen help)
 bool help_overlay_active = false;
+uint8_t help_page = 0;
+
+// Battery HUD smoothing and charging reminder state.
+float battery_display_level = 0.0f;
+bool battery_charging = false;
+bool battery_low_warning_sent = false;
+uint32_t battery_last_check_ms = 0;
+float battery_rate_per_minute = 0.0f;
+float battery_sample_level = 0.0f;
+uint32_t battery_sample_ms = 0;
 
 bool shop_edit_mode = false;            // E toggles item/recipe edit mode
 bool shop_edit_is_recipe = false;       // whether editing a recipe (vs item)
@@ -340,12 +353,47 @@ time_t buildTaskDueTimestamp();
 bool taskCategoryFullySelected(const Task& task, uint16_t category_id);
 void toggleTaskCategorySelection(Task& task, uint16_t category_id);
 void toggleTaskSkillSelection(Task& task, uint16_t category_id, uint16_t skill_id);
+void updateBatteryState();
 
 void setStatus(const char* message, uint32_t ms = 2500) {
     strncpy(status_line, message, sizeof(status_line) - 1);
     status_line[sizeof(status_line) - 1] = '\0';
     status_line_until = millis() + ms;
     Serial.println(status_line);
+}
+
+void updateBatteryState() {
+    if (millis() - battery_last_check_ms < 1000) return;
+    battery_last_check_ms = millis();
+    int raw_level = 0;
+    #if defined(ARDUINO)
+    raw_level = M5Cardputer.Power.getBatteryLevel();
+    battery_charging = M5Cardputer.Power.isCharging();
+    #endif
+    if (battery_display_level <= 0.0f) battery_display_level = (float)raw_level;
+        uint32_t now_ms = millis();
+        if (battery_sample_ms > 0 && now_ms > battery_sample_ms && raw_level != (int)battery_sample_level) {
+            float minutes = (float)(now_ms - battery_sample_ms) / 60000.0f;
+            float rate = ((float)raw_level - battery_sample_level) / minutes;
+            battery_rate_per_minute += (rate - battery_rate_per_minute) * 0.2f;
+        }
+        battery_sample_level = (float)raw_level;
+        battery_sample_ms = now_ms;
+    battery_display_level += ((float)raw_level - battery_display_level) * 0.18f;
+    if (fabsf((float)raw_level - battery_display_level) < 0.15f) battery_display_level = (float)raw_level;
+
+    if (raw_level < 20 && !battery_charging && !battery_low_warning_sent) {
+        battery_low_warning_sent = true;
+        overlay_mode = OVERLAY_BATTERY_LOW;
+        setStatus("Battery low - please charge", 3000);
+        if (settings_system.settings().audio_feedback_enabled) {
+            uint8_t volume = (uint8_t)((uint16_t)settings_system.settings().audio_volume * 255 / 100);
+            M5Cardputer.Speaker.setVolume(volume);
+            M5Cardputer.Speaker.tone(440, 180);
+        }
+    } else if (raw_level >= 23) {
+        battery_low_warning_sent = false;
+    }
 }
 
 // Generate a new math quiz question (up to 8-digit operands)
@@ -1839,9 +1887,8 @@ void handleNavCommand(NavCommand cmd) {
 
     // ---- Skill overlays ----
     if (overlay_mode == OVERLAY_SKILL_FIELD_MENU) {
-        // Category fields (5): Rename Cat, Add Category, Add Skill, Edit Main XP, Delete Cat
-        // Skill fields    (6): Rename Skill, Edit Details, Add Skill, Edit Skill XP, Edit Main XP, Delete Skill
-        uint8_t field_count = skill_edit_is_category ? 5 : 6;
+        // Category actions remain available while a skill in that category is selected.
+        uint8_t field_count = skill_edit_is_category ? 5 : 9;
         if (cmd == NAV_UP && skill_field_menu_index > 0) skill_field_menu_index--;
         else if (cmd == NAV_DOWN && skill_field_menu_index + 1 < field_count) skill_field_menu_index++;
         else if (cmd == NAV_SELECT) {
@@ -1873,18 +1920,22 @@ void handleNavCommand(NavCommand cmd) {
                     beginTextInput(INPUT_EDIT_SKILL_DETAILS, sk->id);
                 } else if (skill_field_menu_index == 2 && cat) {
                     beginTextInput(INPUT_ADD_SKILL, cat->id);
-                } else if (skill_field_menu_index == 3 && sk) {
+                } else if (skill_field_menu_index == 3 && cat) {
+                    beginTextInput(INPUT_RENAME_CATEGORY, cat->id);
+                } else if (skill_field_menu_index == 4) {
+                    beginTextInput(INPUT_ADD_CATEGORY);
+                } else if (skill_field_menu_index == 5 && sk) {
                     skill_xp_edit_skill_id = sk->id;
                     skill_xp_edit_value = 0;
                     skill_xp_edit_step_index = 2;
                     overlay_mode = OVERLAY_SKILL_XP_EDIT;
-                } else if (skill_field_menu_index == 4) {
+                } else if (skill_field_menu_index == 6) {
                     // Edit Main XP — math quiz guard
                     math_quiz_question = 0;
                     generateMathQuizQuestion();
                     beginTextInput(INPUT_MATH_QUIZ_ANSWER);
                     overlay_mode = OVERLAY_MATH_QUIZ;
-                } else if (skill_field_menu_index == 5 && sk) {
+                } else if (skill_field_menu_index == 7 && sk) {
                     skill_delete_is_category = false;
                     profile_delete_confirm_until = millis() + 5000;
                     overlay_mode = OVERLAY_SKILL_DELETE_CONFIRM;
@@ -1901,6 +1952,16 @@ void handleNavCommand(NavCommand cmd) {
             overlay_mode = OVERLAY_NONE;
             setStatus("Delete cancelled", 1000);
         }
+        return;
+    }
+
+    if (overlay_mode == OVERLAY_SKILL_DETAILS || overlay_mode == OVERLAY_ITEM_DETAILS) {
+        if (cmd == NAV_BACK || cmd == NAV_SELECT) overlay_mode = OVERLAY_NONE;
+        return;
+    }
+
+    if (overlay_mode == OVERLAY_BATTERY_LOW) {
+        if (cmd != NAV_NONE) overlay_mode = OVERLAY_NONE;
         return;
     }
 
@@ -2550,6 +2611,7 @@ void handleNavCommand(NavCommand cmd) {
                     overlay_mode = OVERLAY_SKILL_FIELD_MENU;
                 }
             } else {
+                const Skill* sk = selectedSkillInSelectedCategory();
                 if (cmd == NAV_LEFT) {
                     if (selected_category_index > 0) { selected_category_index--; selected_skill_index = 0; }
                 } else if (cmd == NAV_RIGHT) {
@@ -2558,6 +2620,8 @@ void handleNavCommand(NavCommand cmd) {
                     if (selected_skill_index > 0) selected_skill_index--;
                 } else if (cmd == NAV_DOWN) {
                     if (cat && selected_skill_index + 1 < skill_system.getActiveSkillCountInCategory(cat->id)) selected_skill_index++;
+                } else if (cmd == NAV_SELECT) {
+                    if (sk) overlay_mode = OVERLAY_SKILL_DETAILS;
                 }
             }
             break;
@@ -2657,6 +2721,9 @@ void handleNavCommand(NavCommand cmd) {
                     }
                     found++;
                 }
+            } else if (cmd == NAV_BACK) {
+                // Back remains the delete command on the inventory screen.
+                selected_inventory_item_index = 0;
             }
             break;
         }
@@ -2938,6 +3005,8 @@ void handleNavCommand(NavCommand cmd) {
         }
 
         case UI_HELP:
+            if (cmd == NAV_LEFT && help_page > 0) help_page--;
+            else if (cmd == NAV_RIGHT && help_page < 4) help_page++;
             break;
 
         case UI_ALARMS: {
@@ -3292,6 +3361,29 @@ void handleKeyInput(char key) {
             }
             break;
 
+        case UI_HELP:
+            if (key == ',' || key == '<') {
+                if (help_page > 0) help_page--;
+            } else if (key == '.' || key == '>') {
+                if (help_page < 4) help_page++;
+            }
+            break;
+
+        case UI_INVENTORY:
+            if (key == ' ') {
+                uint16_t found = 0;
+                for (uint16_t i = 0; i < shop_system.getItemCountRaw(); i++) {
+                    const ShopItem* inv_it = shop_system.itemsRaw() + i;
+                    if (!inv_it->active || shop_system.getInventoryQuantity(inv_it->id) == 0) continue;
+                    if (found == selected_inventory_item_index) {
+                        overlay_mode = OVERLAY_ITEM_DETAILS;
+                        break;
+                    }
+                    found++;
+                }
+            }
+            break;
+
         case UI_SETTINGS:
             if (sett_section == SETT_TIMEZONE) {
                 GlobalSettings& cfg = settings_system.settings();
@@ -3455,8 +3547,12 @@ void renderUI() {
     ui_canvas.setTextSize(1);
     ui_canvas.setCursor(4, 24);
     ui_canvas.printf("%s %s", date_part.c_str(), time_part.c_str());
-    ui_canvas.setCursor(188, 24);
-    ui_canvas.printf("BAT %d%%", batt);
+    updateBatteryState();
+    uint16_t battery_color = battery_charging ? (battery_display_level >= 95.0f ? 0x07E0 :
+                             battery_display_level < 20.0f ? 0xF800 : 0xFFE0) : 0xE71C;
+    ui_canvas.setTextColor(battery_color, 0x18C3);
+    ui_canvas.setCursor(178, 24);
+    ui_canvas.printf("%s %d%%", battery_charging ? "CRG" : "BAT", (int)(battery_display_level + 0.5f));
 
     // Timer mini-bar: find longest-running (earliest start) timer
     {
@@ -3820,12 +3916,10 @@ void renderUI() {
             ui_canvas.setCursor(24, 78);
             ui_canvas.printf("Y = yes   N = no (%lus)", (unsigned long)remain);
         } else if (overlay_mode == OVERLAY_SKILL_FIELD_MENU) {
-            // Category fields (5): Rename Cat / Add Category / Add Skill / Edit Main XP / Delete Cat
-            // Skill fields    (6): Rename Skill / Edit Details / Add Skill / Edit Skill XP / Edit Main XP / Delete Skill
             static const char* cat_fields[5] = {"Rename Category", "Add Category", "Add Skill", "Edit Main XP", "Delete Category"};
-            static const char* sk_fields[6]  = {"Rename Skill", "Edit Details", "Add Skill", "Edit Skill XP", "Edit Main XP", "Delete Skill"};
+            static const char* sk_fields[8]  = {"Rename Skill", "Edit Details", "Add Skill", "Rename Category", "Add Category", "Edit Skill XP", "Edit Main XP", "Delete Skill"};
             const char** fields = skill_edit_is_category ? cat_fields : sk_fields;
-            uint8_t field_count = skill_edit_is_category ? 5 : 6;
+            uint8_t field_count = skill_edit_is_category ? 5 : 8;
             ui_canvas.setCursor(24, 36);
             ui_canvas.println(skill_edit_is_category ? "CATEGORY EDIT" : "SKILL EDIT");
             for (uint8_t i = 0; i < field_count; i++) {
@@ -4013,6 +4107,49 @@ void renderUI() {
             ui_canvas.setTextColor(muted, 0x0841);
             ui_canvas.setCursor(16, 72);
             ui_canvas.print("Press any key to dismiss");
+        } else if (overlay_mode == OVERLAY_SKILL_DETAILS) {
+            const Skill* detail_skill = selectedSkillInSelectedCategory();
+            ui_canvas.setTextColor(accent, panel);
+            ui_canvas.setCursor(16, 38);
+            ui_canvas.printf("SKILL DETAILS: %.22s", detail_skill ? detail_skill->name : "?");
+            ui_canvas.setTextColor(text, panel);
+            ui_canvas.setCursor(16, 56);
+            ui_canvas.printf("Level %d  XP %d%%", detail_skill ? detail_skill->level : 0,
+                             detail_skill ? skill_system.getSkillXPProgress(detail_skill->id) : 0);
+            ui_canvas.setCursor(16, 72);
+            ui_canvas.printf("%.34s", detail_skill && detail_skill->details[0] ? detail_skill->details : "No description saved.");
+            ui_canvas.setTextColor(muted, panel);
+            ui_canvas.setCursor(16, 108);
+            ui_canvas.println("Space/Enter/Esc: close");
+        } else if (overlay_mode == OVERLAY_ITEM_DETAILS) {
+            const ShopItem* detail_item = nullptr;
+            uint16_t found_item = 0;
+            for (uint16_t i = 0; i < shop_system.getItemCountRaw(); i++) {
+                const ShopItem* candidate = shop_system.itemsRaw() + i;
+                if (!candidate->active || shop_system.getInventoryQuantity(candidate->id) == 0) continue;
+                if (found_item++ == selected_inventory_item_index) { detail_item = candidate; break; }
+            }
+            ui_canvas.setTextColor(accent, panel);
+            ui_canvas.setCursor(16, 38);
+            ui_canvas.printf("ITEM DETAILS: %.22s", detail_item ? detail_item->name : "?");
+            ui_canvas.setTextColor(text, panel);
+            ui_canvas.setCursor(16, 56);
+            ui_canvas.printf("Owned: x%d", detail_item ? shop_system.getInventoryQuantity(detail_item->id) : 0);
+            ui_canvas.setCursor(16, 72);
+            ui_canvas.printf("%.34s", detail_item && detail_item->description[0] ? detail_item->description : "No description saved.");
+            ui_canvas.setTextColor(muted, panel);
+            ui_canvas.setCursor(16, 108);
+            ui_canvas.println("Space/Enter/Esc: close");
+        } else if (overlay_mode == OVERLAY_BATTERY_LOW) {
+            ui_canvas.setTextColor(0xF800, panel);
+            ui_canvas.setCursor(18, 42);
+            ui_canvas.println("BATTERY LOW");
+            ui_canvas.setTextColor(text, panel);
+            ui_canvas.setCursor(18, 62);
+            ui_canvas.println("Please charge the device.");
+            ui_canvas.setTextColor(muted, panel);
+            ui_canvas.setCursor(18, 104);
+            ui_canvas.println("Press any key to dismiss");
         }
         ui_canvas.pushSprite(0, 0);
         return;
@@ -4164,6 +4301,9 @@ void renderUI() {
                 ui_canvas.setTextColor(muted, bg);
                 ui_canvas.setCursor(4, bar_y + 8);
                 ui_canvas.printf("XP %lu/%lu", (unsigned long)sk->current_xp, (unsigned long)xp_need);
+                ui_canvas.setCursor(166, 108);
+                ui_canvas.setTextColor(muted, bg);
+                ui_canvas.printf("%.11s", sk->details[0] ? sk->details : "No details");
             }
         }
         ui_canvas.setTextColor(muted, bg);
@@ -4301,7 +4441,7 @@ void renderUI() {
         }
         ui_canvas.setTextColor(muted, bg);
         ui_canvas.setCursor(6, 106);
-        ui_canvas.println("ENT=use item");
+        ui_canvas.println("ENT=use  SPC=details");
     } else if (current_screen == UI_SAVE_LOAD) {
         ui_canvas.printf("Backend:%s\n", save_load_system.getBackendName());
         ui_canvas.printf("Option:%d\n", save_menu_index + 1);
@@ -4444,14 +4584,44 @@ void renderUI() {
         }
     } else if (current_screen == UI_HELP) {
         ui_canvas.setTextColor(text, bg);
-        ui_canvas.println("M5TDGamify - Quick Guide");
-        ui_canvas.println("TAB: screen menu  H: help overlay");
-        ui_canvas.println("L: manual health  DASH: F=fail task");
-        ui_canvas.println("TASKS: manage, E=edit, N=new");
-        ui_canvas.println("SKILLS: SPC=quick menu (add/XP/chart)");
-        ui_canvas.println("SHOP: buy/craft items");
-        ui_canvas.println("ALARMS: A=add alarm, T=add timer");
-        ui_canvas.println("  SPC=detailed setup for selected");
+        static const char* help_titles[] = {"OVERVIEW", "CONTROLS", "BATTERY INFO", "CHANGELOG", "CREDITS"};
+        ui_canvas.printf("HELP [%d/5] %s\n", help_page + 1, help_titles[help_page]);
+        if (help_page == 0) {
+            ui_canvas.println("TAB: screen menu  H: contextual help");
+            ui_canvas.println("DASH: tasks, level and health");
+            ui_canvas.println("SKILLS: categories and progress");
+            ui_canvas.println("SHOP: buy/craft, INV: owned items");
+        } else if (help_page == 1) {
+            ui_canvas.println("Skills: E edit, SPC menu, ENT details");
+            ui_canvas.println("Inventory: ENT use, SPC description");
+            ui_canvas.println("Shop/Dash: arrows select, ENT action");
+            ui_canvas.println("Use H here for the current page");
+        } else if (help_page == 2) {
+            ui_canvas.printf("Charge: %s  Level: %d%%\n", battery_charging ? "yes" : "no", (int)(battery_display_level + 0.5f));
+            float eta_rate = fabsf(battery_rate_per_minute);
+            int eta_minutes = 0;
+            if (eta_rate > 0.01f) {
+                eta_minutes = battery_charging ? (int)((100.0f - battery_display_level) / eta_rate)
+                                               : (int)(battery_display_level / eta_rate);
+            }
+            if (eta_minutes > 0) ui_canvas.printf("ETA: %dh %02dm\n", eta_minutes / 60, eta_minutes % 60);
+            else ui_canvas.println("ETA: collecting samples...");
+            ui_canvas.println("CRG is shown while charging");
+            ui_canvas.println("Color: red low, yellow charging");
+            ui_canvas.println("Green means fully charged");
+        } else if (help_page == 3) {
+            ui_canvas.println("Changelog");
+            ui_canvas.println("Skill descriptions and detail views");
+            ui_canvas.println("Inventory descriptions and new help");
+            ui_canvas.println("Charging status and low-battery alarm");
+        } else {
+            ui_canvas.println("Credits");
+            ui_canvas.println("M5TDGamify contributors");
+            ui_canvas.println("M5Cardputer / Arduino libraries");
+            ui_canvas.println("PlatformIO and ESP32-S3 toolchain");
+        }
+        ui_canvas.setTextColor(muted, bg);
+        ui_canvas.println("LEFT/RIGHT: help category");
     } else if (current_screen == UI_ALARMS) {
         // Left pane: alarms; right pane: timers
         // Divider
@@ -4558,9 +4728,9 @@ void renderUI() {
             ui_canvas.println("F=fail task  TAB=screen menu");
         } else if (current_screen == UI_SKILLS) {
             ui_canvas.println("SKILLS: track skill progress");
-            ui_canvas.println("SPC=cycle spider chart");
-            ui_canvas.println("E=edit mode (add/remove/XP)");
-            ui_canvas.println("Edit: SPC=field menu");
+            ui_canvas.println("ENT=skill details, SPC=chart");
+            ui_canvas.println("E edit: category rename/add always");
+            ui_canvas.println("SPC=field menu, delete cat only empty");
         } else if (current_screen == UI_SHOP) {
             ui_canvas.println("SHOP: buy & craft items");
             ui_canvas.println(",/=focus  Z=setup mode");
@@ -4581,6 +4751,13 @@ void renderUI() {
             ui_canvas.println("N=new  ENT=load  DEL=delete");
         } else if (current_screen == UI_INVENTORY) {
             ui_canvas.println("INVENTORY: view owned items");
+            ui_canvas.println("ENT=use  SPC=description");
+        } else if (current_screen == UI_HELP) {
+            ui_canvas.println("HELP: browse categorized pages");
+            ui_canvas.println("LEFT/RIGHT changes the page");
+        } else if (current_screen == UI_DASHBOARD) {
+            ui_canvas.println("DASH: select a task and press ENT");
+            ui_canvas.println("F=fail task, battery status is above");
         } else if (current_screen == UI_SAVE_LOAD) {
             ui_canvas.println("SAVE/LOAD: manual data control");
         } else {

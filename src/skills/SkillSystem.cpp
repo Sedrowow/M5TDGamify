@@ -63,10 +63,9 @@ const SkillCategory* SkillSystem::getCategory(uint16_t category_id) const {
 bool SkillSystem::removeCategory(uint16_t category_id) {
     for (uint16_t i = 0; i < category_count; i++) {
         if (categories[i].id == category_id && categories[i].active) {
-            // Also remove all skills in this category.
             for (uint16_t j = 0; j < skill_count; j++) {
                 if (skills[j].active && skills[j].category_id == category_id) {
-                    skills[j].active = false;
+                    return false;
                 }
             }
             categories[i].active = false;

@@ -1020,6 +1020,9 @@ bool SaveLoadSystem::saveSkills(const SkillSystem& skill_system) {
     }
 
     String path = profileSkillsPath(active_profile_name);
+    if (active_fs->exists(path.c_str())) {
+        active_fs->remove(path.c_str());
+    }
     File file = active_fs->open(path.c_str(), FILE_WRITE);
     if (!file) {
         last_error = "Failed to open skills file for writing";
