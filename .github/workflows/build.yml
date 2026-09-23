@@ -11,7 +11,7 @@ on:
       version:
         description: 'Version label (e.g. 1.0). Leave blank to use tag or commit SHA.'
         required: false
-        default: ''
+        default: '1.04'
 
 jobs:
   build:

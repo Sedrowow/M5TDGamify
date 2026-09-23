@@ -185,11 +185,15 @@ uint8_t help_page = 0;
 // Battery HUD smoothing and charging reminder state.
 float battery_display_level = 0.0f;
 bool battery_charging = false;
+bool battery_charge_status_known = false;
 bool battery_low_warning_sent = false;
 uint32_t battery_last_check_ms = 0;
 float battery_rate_per_minute = 0.0f;
 float battery_sample_level = 0.0f;
 uint32_t battery_sample_ms = 0;
+int battery_rate_start_level = -1;
+uint32_t battery_rate_start_ms = 0;
+bool battery_rate_valid = false;
 
 bool shop_edit_mode = false;            // E toggles item/recipe edit mode
 bool shop_edit_is_recipe = false;       // whether editing a recipe (vs item)
@@ -365,20 +369,34 @@ void setStatus(const char* message, uint32_t ms = 2500) {
 void updateBatteryState() {
     if (millis() - battery_last_check_ms < 1000) return;
     battery_last_check_ms = millis();
-    int raw_level = 0;
+    int raw_level = -1;
     #if defined(ARDUINO)
     raw_level = M5Cardputer.Power.getBatteryLevel();
-    battery_charging = M5Cardputer.Power.isCharging();
+    m5::Power_Class::is_charging_t charge_state = M5Cardputer.Power.isCharging();
+    // Cardputer uses ADC-only battery sensing; unknown must never mean charging.
+    battery_charge_status_known = charge_state != m5::Power_Class::is_charging_t::charge_unknown;
+    battery_charging = charge_state == m5::Power_Class::is_charging_t::is_charging;
     #endif
+    if (raw_level < 0 || raw_level > 100) return;
+
+    uint32_t now_ms = millis();
     if (battery_display_level <= 0.0f) battery_display_level = (float)raw_level;
-        uint32_t now_ms = millis();
-        if (battery_sample_ms > 0 && now_ms > battery_sample_ms && raw_level != (int)battery_sample_level) {
-            float minutes = (float)(now_ms - battery_sample_ms) / 60000.0f;
-            float rate = ((float)raw_level - battery_sample_level) / minutes;
-            battery_rate_per_minute += (rate - battery_rate_per_minute) * 0.2f;
-        }
-        battery_sample_level = (float)raw_level;
-        battery_sample_ms = now_ms;
+    if (battery_rate_start_level < 0) {
+        battery_rate_start_level = raw_level;
+        battery_rate_start_ms = now_ms;
+    }
+    // Percent readings are quantized and noisy. Use a five-minute window and
+    // require at least a two-point change before presenting an ETA.
+    uint32_t rate_window_ms = now_ms - battery_rate_start_ms;
+    int level_delta = raw_level - battery_rate_start_level;
+    if (rate_window_ms >= 300000UL && abs(level_delta) >= 2) {
+        battery_rate_per_minute = ((float)level_delta * 60000.0f) / (float)rate_window_ms;
+        battery_rate_valid = true;
+        battery_rate_start_level = raw_level;
+        battery_rate_start_ms = now_ms;
+    }
+    battery_sample_level = (float)raw_level;
+    battery_sample_ms = now_ms;
     battery_display_level += ((float)raw_level - battery_display_level) * 0.18f;
     if (fabsf((float)raw_level - battery_display_level) < 0.15f) battery_display_level = (float)raw_level;
 
@@ -3536,11 +3554,6 @@ void renderUI() {
     String ts = time_sync.getCurrentTimeString();
     String date_part = ts.length() >= 10 ? ts.substring(0, 10) : String("----/--/--");
     String time_part = ts.length() >= 16 ? ts.substring(11, 16) : String("--:--");
-    int batt = 0;
-    #if defined(ARDUINO)
-    batt = M5Cardputer.Power.getBatteryLevel();
-    #endif
-
     // Info bar below header: date + time + [timer bar] + battery.
     ui_canvas.fillRoundRect(0, 21, 240, 12, 2, 0x18C3);
     ui_canvas.setTextColor(0xE71C, 0x18C3);
@@ -4597,16 +4610,20 @@ void renderUI() {
             ui_canvas.println("Shop/Dash: arrows select, ENT action");
             ui_canvas.println("Use H here for the current page");
         } else if (help_page == 2) {
-            ui_canvas.printf("Charge: %s  Level: %d%%\n", battery_charging ? "yes" : "no", (int)(battery_display_level + 0.5f));
+            const char* charge_label = !battery_charge_status_known ? "unknown" : (battery_charging ? "yes" : "no");
+            ui_canvas.printf("Charge: %s  Level: %d%%\n", charge_label, (int)(battery_display_level + 0.5f));
             float eta_rate = fabsf(battery_rate_per_minute);
             int eta_minutes = 0;
-            if (eta_rate > 0.01f) {
+            bool eta_direction_valid = battery_rate_valid &&
+                ((battery_charging && battery_rate_per_minute > 0.01f) ||
+                 (!battery_charging && battery_rate_per_minute < -0.01f));
+            if (eta_direction_valid && eta_rate > 0.01f) {
                 eta_minutes = battery_charging ? (int)((100.0f - battery_display_level) / eta_rate)
                                                : (int)(battery_display_level / eta_rate);
             }
             if (eta_minutes > 0) ui_canvas.printf("ETA: %dh %02dm\n", eta_minutes / 60, eta_minutes % 60);
             else ui_canvas.println("ETA: collecting samples...");
-            ui_canvas.println("CRG is shown while charging");
+            ui_canvas.println(battery_charge_status_known ? "CRG is shown while charging" : "Cardputer charge status unavailable");
             ui_canvas.println("Color: red low, yellow charging");
             ui_canvas.println("Green means fully charged");
         } else if (help_page == 3) {
