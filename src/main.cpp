@@ -549,17 +549,17 @@ void updateHudAnimation() {
         if (health_percent > 20) {
             health_flash_toggles = 0;
             health_flash_visible = true;
-        } else if (last_health_percent > 20 || (health_percent <= 5 && last_health_percent > 5)) {
-            health_flash_toggles = health_percent <= 5 ? 1 : 20;
+        } else if (last_health_percent > 20 || (health_percent <= 10 && last_health_percent > 10)) {
+            health_flash_toggles = health_percent <= 10 ? 1 : 20;
             health_flash_last_ms = millis();
         }
         last_health_percent = health_percent;
     }
-    if (health_percent <= 20 && millis() - health_flash_last_ms >= (health_percent <= 5 ? 320 : 90)) {
+    if (health_percent <= 20 && millis() - health_flash_last_ms >= (health_percent <= 10 ? 180 : 360)) {
         health_flash_last_ms = millis();
         health_flash_visible = !health_flash_visible;
-        if (health_percent > 5 && health_flash_toggles > 0) health_flash_toggles--;
-        if (health_percent > 5 && health_flash_toggles == 0) health_flash_visible = true;
+        if (health_percent > 10 && health_flash_toggles > 0) health_flash_toggles--;
+        if (health_percent > 10 && health_flash_toggles == 0) health_flash_visible = true;
     }
 
     // Per-level XP animation and sound (instead of instant jump).
@@ -3675,7 +3675,8 @@ void renderUI() {
     // Health percentage when in manual health input mode (transparent)
     // HP text is drawn on top of the HP bar with a color that stays readable.
     bool hp_warning = current_hp_percent == 0 ||
-        (current_hp_percent <= 20 && health_flash_visible);
+        (current_hp_percent <= 20 && health_flash_visible) ||
+        (current_hp_percent <= 10 && health_flash_visible);
     ui_canvas.setTextColor(hp_warning ? 0xF800 : 0xFFFF);
     ui_canvas.setCursor(145, 12);
     if (settings_system.settings().health_display_points)
