@@ -1565,6 +1565,22 @@ String wrappedTextLine(const char* text, uint8_t wanted_line, uint8_t max_chars)
     return String("");
 }
 
+String letterScrollWindow(const char* text, uint16_t offset, uint8_t width) {
+    if (!text || width == 0) return String("");
+    String source(text);
+    uint16_t text_len = source.length();
+    if (text_len == 0) return String(" ");
+    String out;
+    uint16_t cycle = text_len + 8;
+    for (uint8_t i = 0; i < width; i++) {
+        uint16_t idx = offset + i;
+        if (idx >= cycle) idx = idx % cycle;
+        if (idx >= text_len) out += ' ';
+        else out += source.charAt(idx);
+    }
+    return out;
+}
+
 String taskRewardItemLabel(const Task& task) {
     if (task.reward_item_id == 0) return String("No item");
     const ShopItem* item = shop_system.getItem(task.reward_item_id);
@@ -3744,7 +3760,7 @@ void renderUI() {
     if (screen_selector_active) {
         scroll_text += ";/.:Move  ENT:Select  `:Close  TAB:Menu";
     } else if (manual_health_active) {
-        scroll_text += manual_health_percent_mode ? "1-0:Set%  -=Down  =:Up  SPC:Points  ENT:Apply  `:Cancel" : "-=:HP  ,/.Step  SPC:%  ENT:Apply  `:Cancel";
+        scroll_text += manual_health_percent_mode ? "1-0:Set%  -=Down  =:Up  SPC:Points  ENT:Apply  `:Cancel" : ",/:Step  ;:Up  .:Down  SPC:%  ENT:Apply  `:Cancel";
     } else if (text_input_active) {
         scroll_text += "Type text  DEL:Erase  ENT:Save  `:Cancel  TAB:Menu";
     } else if (current_screen == UI_DASHBOARD) {
@@ -4321,7 +4337,7 @@ void renderUI() {
         if (manual_health_percent_mode) ui_canvas.printf("Health: %d%%\n", manual_health_input_percent);
         else ui_canvas.printf("Health: %d/%d\n", manual_health_input_points, health_system.getMaxHealthPoints());
         ui_canvas.setTextSize(1);
-        ui_canvas.println(manual_health_percent_mode ? "1-9: 10-90%   0: 100%" : "- / +: change   ,/. step");
+        ui_canvas.println(manual_health_percent_mode ? "1-9: 10-90%   0: 100%" : ",/: step  ;: +  .: -");
         ui_canvas.println(manual_health_percent_mode ? "- / +: change   SPC: points" : "SPC: percent");
         ui_canvas.setTextColor(muted, panel);
         ui_canvas.setCursor(6, 104);
@@ -4464,14 +4480,13 @@ void renderUI() {
                     skill_menu_scroll_line = 0;
                     skill_menu_scroll_last_ms = millis();
                 }
-                if (!skill_edit_mode && sk->details[0] && millis() - skill_menu_scroll_last_ms >= 1400) {
+                if (!skill_edit_mode && sk->details[0] && millis() - skill_menu_scroll_last_ms >= 170) {
                     skill_menu_scroll_last_ms = millis();
-                    if (wrappedTextLine(sk->details, skill_menu_scroll_line + 1, 9).length() > 0) skill_menu_scroll_line++;
-                    else skill_menu_scroll_line = 0;
+                    skill_menu_scroll_line++;
                 }
                 ui_canvas.setCursor(166, 108);
                 ui_canvas.setTextColor(muted, bg);
-                ui_canvas.printf("D:%.9s", wrappedTextLine(sk->details[0] ? sk->details : "No details", skill_menu_scroll_line, 9).c_str());
+                ui_canvas.printf("D:%.9s", letterScrollWindow(sk->details[0] ? sk->details : "No details", skill_menu_scroll_line, 9).c_str());
             }
         }
         ui_canvas.setTextColor(muted, bg);
@@ -5354,27 +5369,26 @@ void loop() {
                 } else if (manual_health_percent_mode && ch == '0') {
                     manual_health_input_percent = 100;
                     handled = true;
-                } else if (ch == '-') {
-                    if (manual_health_percent_mode) {
+                } else if (manual_health_percent_mode && (ch == '-' || ch == '=' || ch == '+')) {
+                    if (ch == '-') {
                         if (manual_health_input_percent > 0) manual_health_input_percent--;
                     } else {
-                        uint16_t step = health_steps[manual_health_step_index];
-                        manual_health_input_points = manual_health_input_points > step ? manual_health_input_points - step : 0;
-                    }
-                    handled = true;
-                } else if (ch == '=' || ch == '+') {
-                    if (manual_health_percent_mode) {
                         if (manual_health_input_percent < 100) manual_health_input_percent++;
-                    } else {
-                        uint32_t next = (uint32_t)manual_health_input_points + health_steps[manual_health_step_index];
-                        manual_health_input_points = next > health_system.getMaxHealthPoints() ? health_system.getMaxHealthPoints() : (uint16_t)next;
                     }
                     handled = true;
                 } else if (!manual_health_percent_mode && ch == ',') {
                     if (manual_health_step_index > 0) manual_health_step_index--;
                     handled = true;
-                } else if (!manual_health_percent_mode && ch == '.') {
+                } else if (!manual_health_percent_mode && ch == '/') {
                     if (manual_health_step_index < 4) manual_health_step_index++;
+                    handled = true;
+                } else if (!manual_health_percent_mode && ch == ';') {
+                    uint32_t next = (uint32_t)manual_health_input_points + health_steps[manual_health_step_index];
+                    manual_health_input_points = next > health_system.getMaxHealthPoints() ? health_system.getMaxHealthPoints() : (uint16_t)next;
+                    handled = true;
+                } else if (!manual_health_percent_mode && ch == '.') {
+                    uint16_t step = health_steps[manual_health_step_index];
+                    manual_health_input_points = manual_health_input_points > step ? manual_health_input_points - step : 0;
                     handled = true;
                 } else if (ch == ' ') {
                     manual_health_percent_mode = !manual_health_percent_mode;
