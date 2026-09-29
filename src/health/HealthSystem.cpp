@@ -64,6 +64,7 @@ uint8_t HealthSystem::getHealth() const {
 }
 
 uint16_t HealthSystem::getHealthPoints() const {
+    if (mode == HEALTH_MANUAL) return manual_health_points;
     return (uint16_t)(((uint32_t)getHealth() * max_health_points + 50U) / 100U);
 }
 

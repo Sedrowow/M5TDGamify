@@ -570,6 +570,7 @@ bool SaveLoadSystem::loadCurrentProfileState(LevelSystem& level_system, HealthSy
     level_system.setCurrentXP(loaded_current_xp);
     level_system.setLifetimeXP(loaded_lifetime_xp);
 
+    health_system.updateMaxHealthForLevel(level_system.getLevel());
     if (loaded_health_base_max > 0) health_system.setBaseMaxHealthPoints((uint16_t)loaded_health_base_max);
 
     money = loaded_money;

@@ -346,7 +346,6 @@ uint16_t hud_levelup_step_ms = 220;
 uint16_t hud_levelup_sound_ms = 140;
 uint32_t hud_bar_sound_last_ms = 0;
 uint32_t health_flash_last_ms = 0;
-uint8_t health_flash_toggles = 0;
 bool health_flash_visible = true;
 uint8_t last_health_percent = 100;
 
@@ -546,20 +545,16 @@ void updateHudAnimation() {
 
     uint8_t health_percent = health_system.getHealth();
     if (health_percent != last_health_percent) {
-        if (health_percent > 20) {
-            health_flash_toggles = 0;
+        if (health_percent > 30) {
             health_flash_visible = true;
-        } else if (last_health_percent > 20 || (health_percent <= 10 && last_health_percent > 10)) {
-            health_flash_toggles = health_percent <= 10 ? 1 : 20;
-            health_flash_last_ms = millis();
         }
+        health_flash_last_ms = millis();
         last_health_percent = health_percent;
     }
-    if (health_percent <= 20 && millis() - health_flash_last_ms >= (health_percent <= 10 ? 180 : 360)) {
+    if (health_percent > 0 && health_percent <= 30 &&
+        millis() - health_flash_last_ms >= (health_percent <= 15 ? 180 : 360)) {
         health_flash_last_ms = millis();
         health_flash_visible = !health_flash_visible;
-        if (health_percent > 10 && health_flash_toggles > 0) health_flash_toggles--;
-        if (health_percent > 10 && health_flash_toggles == 0) health_flash_visible = true;
     }
 
     // Per-level XP animation and sound (instead of instant jump).
@@ -3675,8 +3670,7 @@ void renderUI() {
     // Health percentage when in manual health input mode (transparent)
     // HP text is drawn on top of the HP bar with a color that stays readable.
     bool hp_warning = current_hp_percent == 0 ||
-        (current_hp_percent <= 20 && health_flash_visible) ||
-        (current_hp_percent <= 10 && health_flash_visible);
+        (current_hp_percent <= 30 && health_flash_visible);
     ui_canvas.setTextColor(hp_warning ? 0xF800 : 0xFFFF);
     ui_canvas.setCursor(145, 12);
     if (settings_system.settings().health_display_points)
