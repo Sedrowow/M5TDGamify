@@ -13,6 +13,7 @@ uint16_t TaskManager::addTask(const char* name, const char* details, uint8_t dif
     }
 
     Task& new_task = tasks[task_count];
+    new_task = Task();
     strncpy(new_task.name, name, MAX_TASK_NAME_LEN - 1);
     new_task.name[MAX_TASK_NAME_LEN - 1] = '\0';
     
@@ -35,7 +36,10 @@ uint16_t TaskManager::addTask(const char* name, const char* details, uint8_t dif
         new_task.addLinkedSkill(linked_skill_category_id, linked_skill_id);
     }
     new_task.completed = false;
+    new_task.failed = false;
+    new_task.archived = false;
     new_task.creation_time = millis() / 1000;  // Unix-like timestamp
+    new_task.completion_time = 0;
     new_task.id = next_task_id;
 
     task_count++;

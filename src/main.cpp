@@ -1099,7 +1099,10 @@ void generateRandomTask() {
     uint8_t urgency = (uint8_t)(10 + (esp_random() % 91));
     uint8_t fear    = (uint8_t)(esp_random() % 101);
 
-    task_manager.addTask(name, details, diff, urgency, fear, 1, 0, 0, 0, 0, 0, 0, 0);
+    if (task_manager.addTask(name, details, diff, urgency, fear, 1, 0, 0, 0, 0, 0, 0, 0) == 0) {
+        setStatus("Task limit reached");
+        return;
+    }
     profile_tasks_created++;
     normalizeTaskSelection();
     selected_task_index = task_manager.getVisibleTaskCount() > 0 ? task_manager.getVisibleTaskCount() - 1 : 0;
@@ -1287,10 +1290,14 @@ void finishTextInput() {
         }
     } else if (input_purpose == INPUT_NEW_TASK_NAME) {
         const Skill* skill = skill_system.getSkillByActiveIndex(0);
-        task_manager.addTask(text_input_buffer, "", 10, 10, 0, 1, 0, 0, 100,
-                             skill ? skill->category_id : 0,
-                             skill ? skill->id : 0,
-                             0, 0);
+        uint16_t created_task_id = task_manager.addTask(text_input_buffer, "", 10, 10, 0, 1, 0, 0, 100,
+                                                        skill ? skill->category_id : 0,
+                                                        skill ? skill->id : 0,
+                                                        0, 0);
+        if (created_task_id == 0) {
+            setStatus("Task limit reached");
+            return;
+        }
         profile_tasks_created++;
         normalizeTaskSelection();
         selected_task_index = task_manager.getVisibleTaskCount() > 0 ? task_manager.getVisibleTaskCount() - 1 : 0;
