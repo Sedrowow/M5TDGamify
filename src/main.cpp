@@ -4806,14 +4806,16 @@ void renderUI() {
             ui_canvas.println("Green means fully charged");
         } else if (help_page == 3) {
             ui_canvas.println("Changelog");
-            ui_canvas.println("Skill descriptions and detail views");
-            ui_canvas.println("Inventory descriptions and new help");
-            ui_canvas.println("Charging status and low-battery alarm");
+            ui_canvas.println("Profile task slot reset fix");
+            ui_canvas.println("Numerical HP and level-based max HP");
+            ui_canvas.println("Shop max HP effects and skill details");
+            ui_canvas.println("Battery alerts and scrolling UI");
         } else {
             ui_canvas.println("Credits");
-            ui_canvas.println("M5TDGamify contributors");
-            ui_canvas.println("M5Cardputer / Arduino libraries");
-            ui_canvas.println("PlatformIO and ESP32-S3 toolchain");
+            ui_canvas.println("Contributor: Sedrowow");
+            ui_canvas.println("Contributor: GitHub Copilot");
+            ui_canvas.println("M5Cardputer, M5Unified, M5GFX");
+            ui_canvas.println("Arduino-ESP32 and PlatformIO");
         }
         ui_canvas.setTextColor(muted, bg);
         ui_canvas.println("LEFT/RIGHT: help category");

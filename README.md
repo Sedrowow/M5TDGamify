@@ -1,288 +1,80 @@
-# Fiveite - Gamification Todo List for M5Cardputer
+# Fiveite - Gamified Task Manager for M5Cardputer
 
-A complete gamification system for the M5Cardputer with RPG-style progression, task management, health mechanics, and reward systems.
+Fiveite is an on-device task manager with RPG progression, configurable health, skills, profiles, a shop and inventory, alarms, timers, and Wi-Fi time synchronization. It runs on the M5Cardputer using the Arduino framework and PlatformIO.
 
-## Project Status
+## Current Features
 
-### ✅ Completed Systems
-1. **Task System** - Full task management with comprehensive properties
-   - Task properties: name, details, difficulty, urgency, fear, repetition, duration, due date, reward
-   - XP calculation based on difficulty, urgency, and fear (max 1.4M XP per task)
-   - Task creation, removal, completion tracking
-   - TaskManager for managing up to 128 tasks
+- **Tasks:** Create, complete, fail, archive, and edit task properties, descriptions, due dates, durations, rewards, and linked skills. Up to 128 task records are stored per profile.
+- **Progression:** Player levels range from 1 to 999. Task XP accounts for difficulty, urgency, fear, repetition, duration, due dates, and late completion. Health applies an XP multiplier.
+- **Health:** Health can follow a daily time schedule or be set manually as a percentage or exact point value. Optional level-based maximum-health growth supports fixed HP or percentage growth. Shop items can increase or decrease maximum HP.
+- **Skills:** Create and edit categories and skills, save descriptions, view detailed descriptions, and track skill XP and levels. Tasks can award XP to linked skills.
+- **Shop and inventory:** Buy items, craft recipes, use items, and edit the catalog. Effects include XP, random XP, countdowns, and maximum HP changes.
+- **Profiles and persistence:** Profile-specific tasks, skills, levels, health, money, and shop state are saved to SD when available. SPIFFS provides local storage when SD is unavailable; multi-profile management requires SD.
+- **Alarms and timers:** Configure alarms and countdown timers with on-device notifications.
+- **Time and settings:** Wi-Fi/NTP sync, manual time, timezone and date format settings, health schedule, audio/visual feedback, and skill XP distribution.
+- **Help and battery status:** In-device help includes controls, battery information, changelog, and credits. Battery percentage is smoothed; the Cardputer may report charging state as unavailable because its battery sensing is ADC-based.
 
-2. **Level System** - RPG-style progression
-   - Exponential XP scaling (base 1000 XP, 1.1x multiplier per level)
-   - Levels 1-999 support
-   - XP tracking (current, lifetime)
-   - Level progression, XP progress tracking
-   - Automatic level up calculation
+## Build and Upload
 
-3. **Health System** - Dynamic health mechanics affecting XP gain
-   - **Manual Mode**: Player directly sets health (0-100%)
-   - **Time-Based Mode**: Health cycles throughout the day (e.g., 100% at 8 AM → 0% at 10 PM)
-   - XP multipliers based on health quarters:
-     - Quarter 1 (100-75%): 1.00x multiplier
-     - Quarter 2 (74-50%):  0.75x multiplier
-     - Quarter 3 (49-25%):  0.50x multiplier
-     - Quarter 4 (24-0%):   0.25x multiplier
+Prerequisites: PlatformIO, an M5Cardputer, and a USB cable.
 
-4. **Time Sync System** - WiFi and timezone management
-   - WiFi-based NTP time synchronization
-   - Manual time setting
-   - UTC timezone offset support (-12 to +14)
-   - Timezone helper with common regions (PST, EST, GMT, CET, IST, JST, etc.)
-   - Time display formatting
-
-5. **Skill System** - Player-defined categories and skills
-   - Custom skill categories can be created by the player
-   - Custom skills can be created inside each category
-   - Tasks can be linked to a selected skill
-   - Skills level up slower than player level (higher XP requirement + lower XP gain)
-   - Chart-ready snapshot APIs for future web-chart/radar UI
-
-6. **Advanced UI/Navigation** - Multi-screen keyboard UI on device
-   - Screen navigation with Dashboard, Skills, and Save/Load screens
-   - Skill management UI for adding/removing categories and skills
-   - On-screen status feedback for actions and errors
-
-7. **Save/Load System** - SPIFFS persistence for skills
-   - Save current skill/category data to SPIFFS
-   - Load saved skill/category data at startup or on command
-   - Clear save file option from Save/Load screen
-
-### 🔄 In Progress
-- Shop System design
-
-### 📋 Todo Systems
-- Shop System
-- Money System (basic reward tracking ready)
-- Full task editor UI (create/edit/delete tasks on device)
-
-## Building the Project
-
-### Prerequisites
-- PlatformIO VS Code Extension
-- M5Cardputer and USB Cable
-- Driver for M5Cardputer (CH340 or similar)
-
-### Build & Upload
-```bash
-# Build for M5Cardputer
+```sh
 pio run -e m5stack-cardputer
-
-# Upload to device
 pio run -e m5stack-cardputer -t upload
-
-# Monitor serial output
 pio run -e m5stack-cardputer -t monitor
 ```
 
-## Project Structure
+The serial monitor uses 115200 baud.
 
-```
-Fiveite/
-├── platformio.ini                  # PlatformIO configuration
-├── src/
-│   ├── main.cpp                    # Main entry point with demo
-│   ├── tasks/
-│   │   ├── Task.h                  # Task data structure
-│   │   └── TaskManager.cpp         # Task management
-│   ├── levelsystem/
-│   │   ├── LevelSystem.h           # Level system header
-│   │   └── LevelSystem.cpp         # Level system implementation
-│   ├── health/
-│   │   ├── HealthSystem.h          # Health system header
-│   │   └── HealthSystem.cpp        # Health system implementation
-│   ├── skills/
-│   │   ├── SkillSystem.h           # Skill categories + skills + progression
-│   │   └── SkillSystem.cpp         # Skill progression implementation
-│   ├── persistence/
-│   │   ├── SaveLoadSystem.h        # SPIFFS save/load interface
-│   │   └── SaveLoadSystem.cpp      # SPIFFS serialization logic
-│   └── time/
-│       ├── TimeSync.h              # Time sync header
-│       └── TimeSync.cpp            # Time sync implementation
-├── lib/                            # External libraries
-└── README.md                       # This file
-```
+## Controls
 
-## Task System Details
+`TAB` opens the screen selector. `;` and `.` move up/down, `,` and `/` move left/right, `ENTER` selects, and backtick goes back. `H` opens contextual help. The bottom status bar scrolls screen-specific hints.
 
-### Task Properties
-- **name**: Required task name (max 64 chars)
-- **details**: Optional task description (max 256 chars)
-- **difficulty**: 0-100% - How hard is the task?
-- **urgency**: 0-100% - How urgent is it?
-- **fear**: 0-100 - How scary/challenging is it emotionally?
-- **repetition**: Number of times to repeat (default: 1)
-- **duration**: Minutes to complete (0 = no duration)
-- **due_date**: Unix timestamp for due date (0 = no deadline)
-- **reward**: Dollar amount reward upon completion
-- **completed**: Track completion status
+| Screen | Main controls |
+|---|---|
+| Dashboard | Up/down selects a task, `ENTER` completes it, `F` fails it, `L` opens manual health input. |
+| Tasks | `N` creates a task, `E` toggles editing, `ENTER` completes, `D` deletes or archives, `T` edits its description. In edit mode use left/right to select a field, up/down to change it, and `SPACE` for detailed field editors. |
+| Skills | Left/right selects categories, up/down selects skills, `ENTER` opens skill details, `SPACE` cycles charts, `E` enables editing, then `SPACE` opens the edit menu. |
+| Shop | Up/down selects an entry, left/right changes item/recipe focus, `ENTER` buys or crafts, `E` and `SPACE` open editing, `Z` enables setup mode. |
+| Inventory | Up/down selects an item, `ENTER` uses it, `SPACE` opens its description. |
+| Profiles | Up/down selects a profile, `ENTER` switches, `N` creates, `G` edits its description, `DEL` deletes. Creating and managing multiple profiles requires SD. |
+| Alarms | Left switches alarm/timer panes. `A` adds an alarm, `T` adds a timer in the timer pane, `SPACE` opens setup, `ENTER` toggles, and `DEL` removes. |
+| Help | Left/right switches Overview, Controls, Battery Info, Changelog, and Credits pages. |
 
-### XP Calculation Formula
-```
-Total XP = (Difficulty × 4000) + (Urgency × 4000) + (Fear × 3400)
-Maximum XP = 1,340,000 per task (when all are 100)
-```
+### Health Controls
 
-## Level System Details
+Press `L` to open manual health input. In percentage mode, `1`-`9` set 10%-90%, `0` sets 100%, and `-`/`+` adjust by one percentage point. `SPACE` switches between percentage and numerical HP. In numerical mode, `,`/`/` decrease/increase the step, `;` increases HP by that step, and `.` decreases it. `ENTER` applies the value; numerical mode stays open until confirmed.
 
-### XP Scaling Formula
-```
-XP for level N = 1000 × (1.1 ^ (N - 2))
+In **Settings > Health**, `P` switches the HUD display between percentage and points, `G` toggles level-based maximum HP growth, `M` switches growth between fixed points and percent, `+`/`-` change its amount, and `J` opens the wake/sleep time editor. Time-based health calculations remain percentage-based.
 
-Example progression:
-Level 1→2:   1,000 XP
-Level 2→3:   1,100 XP
-Level 3→4:   1,210 XP
-Level 10→11: 2,593 XP
-Level 50→51: 117,390 XP
+## Task XP and Player Levels
+
+Task base XP is calculated from its properties: 100 base XP, plus difficulty × 12, urgency × 12, fear × 9, repetition bonuses, duration bonuses, and a due-date bonus for near deadlines. Completing after the due date reduces XP by 15%. Health then applies the player XP multiplier: 1.00x at 75%-100%, 0.75x at 50%-74%, 0.50x at 25%-49%, and 0.25x below 25%.
+
+Player XP requirements start at 1,500 XP for level 2 and grow by a factor of 1.2 per level. Skill progression has its own XP curve and configurable task XP ratio and split behavior.
+
+## Storage
+
+The firmware uses SD storage when available and falls back to SPIFFS for local profile data. Global device settings are stored separately from profile data. Shop catalog data is shared while inventory and shop runtime state are profile-specific. The Save/Load screen provides manual profile save/load and shared shop catalog operations.
+
+## Source Layout
+
+```text
+src/
+  alarms/       Alarm and timer data
+  health/       Health modes, HP points, and XP multipliers
+  levelsystem/  Player XP and level progression
+  persistence/  Profile, settings, task, skill, shop, and alarm storage
+  settings/     Wi-Fi and global device settings
+  shop/         Catalog, crafting, effects, and inventory
+  skills/       Skill categories and progression
+  tasks/        Task model and task manager
+  time/         RTC, timezone, and NTP synchronization
+  main.cpp      Firmware setup, input handling, and UI
 ```
 
-### Max Levels: 999
+## Credits
 
-## Keyboard Commands (Legacy Demo)
-
-- **1** - Complete first task
-- **2** - Complete second task
-- **s** - Show all tasks
-- **l** - Show level info
-- **r** - Reset demo
-
-## Health System Details
-
-### Health Modes
-
-**Manual Mode**
-- Player directly sets health percentage (0-100%)
-- Useful for tracking subjective wellness
-- Example: Set to 80% if feeling good, 40% if tired
-
-**Time-Based Mode**
-- Health automatically cycles based on time of day
-- Configurable start and end times (in 24-hour format)
-- Health interpolates linearly between start (100%) and end (0%)
-- Example: 8 AM (100%) → 10 PM (0%)
-- Before start time: 100% health
-- After end time: 0% health
-
-### XP Multipliers by Health Quarter
-
-| Health Range | Quarter | XP Multiplier | Effect |
-|--------------|---------|---------------|--------|
-| 100-75%      | 1       | 1.00x         | Full XP gain |
-| 74-50%       | 2       | 0.75x         | 75% of XP |
-| 49-25%       | 3       | 0.50x         | 50% of XP |
-| 24-0%        | 4       | 0.25x         | 25% of XP |
-
-**Example**: A 1,000 XP task completed at different health levels:
-- At 100% health: 1,000 XP gained
-- At 60% health: 750 XP gained (Quarter 2)
-- At 40% health: 500 XP gained (Quarter 3)
-- At 10% health: 250 XP gained (Quarter 4)
-
-## Time Sync System Details
-
-### Features
-- **WiFi NTP Synchronization**: Automatically sync time from internet
-- **Manual Time Setting**: Set time manually if WiFi unavailable
-- **Timezone Support**: UTC offset from -12 to +14 hours
-- **Region Presets**: Built-in support for common timezones
-   - PST (UTC-8), MST (UTC-7), CST (UTC-6), EST (UTC-5)
-   - GMT (UTC+0), CET (UTC+1), EET (UTC+2), IST (UTC+5)
-   - JST (UTC+9), AEST (UTC+10), NZST (UTC+12)
-
-### Time Format
-- Internal: Unix timestamp
-- Display: DD/MM/YYYY HH:MM:SS
-- 24-hour clock
-
-### Timezone Setting Examples
-```cpp
-time_sync.setTimezoneOffset(1);    // UTC+1 (Central European Time)
-time_sync.setTimezoneOffset(-5);   // UTC-5 (Eastern Standard Time)
-time_sync.setTimezoneOffset(9);    // UTC+9 (Japan Standard Time)
-```
-
-## Keyboard Commands (Demo)
-
-- **q / e** - Switch between Dashboard, Skills, Save/Load screens
-- **Dashboard**:
-   - **1 / 2** - Complete demo task 1 or 2
-   - **m** - Manual health mode
-   - **b** - Time-based health mode
-   - **r** - Reset demo tasks
-- **Skills Screen**:
-   - **[ / ]** - Select previous/next category
-   - **{ / }** - Select previous/next skill in current category
-   - **a** - Add category (text input)
-   - **k** - Add skill in selected category (text input)
-   - **d** - Delete selected category
-   - **x** - Delete selected skill
-   - **p** - Save skills to SPIFFS
-   - **l** - Load skills from SPIFFS
-- **Save/Load Screen**:
-   - **s** - Save skills/categories
-   - **l** - Load skills/categories
-   - **c** - Clear saved file
-- **Text Input Mode**:
-   - **Enter** - Confirm
-   - **Backspace** - Delete character
-   - **Esc** - Cancel
-
-## Usage Example
-
-### Setup with Time Sync
-```cpp
-// Initialize time sync with WiFi
-time_sync.setTimezoneOffset(1);  // UTC+1
-time_sync.syncWithWiFi("MY_SSID", "MY_PASSWORD");
-
-// Initialize health system to time-based mode
-health_system.setTimeBasedMode();
-health_system.setTimeBasedCycle(8, 22);  // 8 AM = 100%, 10 PM = 0%
-health_system.setCurrentTime(time_sync.getCurrentTime());
-```
-
-### Completing a Task with Health Multiplier
-```cpp
-// Complete a task
-uint32_t base_xp = task_manager.completeTask(task_id);
-
-// Apply health multiplier
-float multiplier = health_system.getXPMultiplier();
-uint16_t levels_gained = level_system.addXPWithMultiplier(base_xp, multiplier);
-```
-
-## Next Steps
-
-1. Implement Shop System
-2. Add on-device Task editor screens (create/edit/delete tasks)
-3. Save/load for tasks, level, health, and time settings
-4. Add audio feedback (beeps/buzzes)
-5. Add final chart screen for skill/category progression comparison
-6. Create final .bin file
-
-## Memory Requirements
-
-- Task array: ~128 tasks × ~400 bytes = ~51 KB
-- Level system: ~16 bytes
-- Health system: ~32 bytes
-- Time system: ~16 bytes
-- Display buffer: Variable
-
-M5Cardputer has 8MB PSRAM, so plenty of room for expansion!
-
-## Serial Debugging
-
-Open the serial monitor in PlatformIO to see:
-- Task creation logs
-- XP gains with health multipliers
-- Level ups
-- Health state changes
-- Time synchronization status
-- System debug info
-
-Set baud rate to **115200**
+- Contributors: Sedrowow and GitHub Copilot
+- Hardware/UI libraries: M5Cardputer, M5Unified, and M5GFX
+- Runtime and build tooling: Arduino-ESP32 and PlatformIO
