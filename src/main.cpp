@@ -5665,11 +5665,14 @@ void loop() {
         setStatus("Delete cancelled", 1000);
     }
 
+    // isChange() consumes the event, so read it once and share the result.
+    const bool keys_changed = M5Cardputer.Keyboard.isChange();
+
     // Key repeat for the notes editor; the main input path below only fires on key changes.
     if (!alarm_is_ringing && !timer_is_ringing && notesEditorCaptures()) {
         static uint32_t repeat_started_ms = 0;
         static uint32_t repeat_last_ms = 0;
-        if (M5Cardputer.Keyboard.isChange()) {
+        if (keys_changed) {
             repeat_started_ms = millis();
             repeat_last_ms = millis();
         } else {
@@ -5687,7 +5690,7 @@ void loop() {
         }
     }
 
-    if (M5Cardputer.Keyboard.isChange()) {
+    if (keys_changed) {
         M5Cardputer.Keyboard.updateKeysState();
         auto& ks = M5Cardputer.Keyboard.keysState();
 
