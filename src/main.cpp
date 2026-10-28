@@ -1752,7 +1752,7 @@ String formatDueDateValue(uint32_t due_date) {
     time_t ts = (time_t)due_date;
     struct tm info;
     localtime_r(&ts, &info);
-    char buf[32];
+    char buf[64];
     snprintf(buf, sizeof(buf), "%02d/%02d/%04d %02d:%02d", info.tm_mday, info.tm_mon + 1,
              info.tm_year + 1900, info.tm_hour, info.tm_min);
     return String(buf);
@@ -2630,7 +2630,6 @@ void handleNavCommand(NavCommand cmd) {
 
     if (overlay_mode == OVERLAY_SHOP_EFFECT_PICK) {
         static const uint8_t EFFECT_COUNT = 6;
-        static const char* effect_names[6] = {"None/Collectible", "Consume & Remove", "Add XP", "Random XP", "Countdown", "Max HP +/-"};
         if (cmd == NAV_UP && shop_effect_pick_index > 0) shop_effect_pick_index--;
         else if (cmd == NAV_DOWN && shop_effect_pick_index + 1 < EFFECT_COUNT) shop_effect_pick_index++;
         else if (cmd == NAV_SELECT) {
@@ -4007,7 +4006,7 @@ void renderUI() {
             ui_canvas.fillRect(bar_x, bar_y, bar_w, bar_h, 0x0841);
             ui_canvas.fillRect(bar_x, bar_y, (int)(bar_w * progress), bar_h, 0x07FF);
             // Timer name/label
-            char label[8];
+            char label[16];
             if (rt->linked_item_id > 0) {
                 const ShopItem* it = shop_system.getItem(rt->linked_item_id);
                 if (it) {
@@ -4020,7 +4019,7 @@ void renderUI() {
             } else {
                 snprintf(label, sizeof(label), "T%d", (int)(rt - timer_entries) + 1);
             }
-            char tstr[12];
+            char tstr[24];
             uint32_t h = remaining / 3600, m = (remaining % 3600) / 60, s = remaining % 60;
             if (h > 0) snprintf(tstr, sizeof(tstr), "%u:%02u:%02u", (unsigned)h, (unsigned)m, (unsigned)s);
             else snprintf(tstr, sizeof(tstr), "%u:%02u", (unsigned)m, (unsigned)s);
@@ -4475,7 +4474,6 @@ void renderUI() {
                 AlarmEntry& ae = alarm_entries[alarm_setup_entry_index];
                 ui_canvas.setCursor(24, 40);
                 ui_canvas.printf("ALARM SETUP (#%d)", alarm_setup_entry_index + 1);
-                static const char* af_names[4] = {"Name", "Hour", "Minute", "Enabled"};
                 static const char* af_hints[4] = {"ENT:edit name", ";/.:change", ";/.:change", ";/.:toggle"};
                 ui_canvas.setTextColor(text, panel);
                 for (uint8_t i = 0; i < 4; i++) {
@@ -4501,7 +4499,6 @@ void renderUI() {
                 uint32_t ts2 = te.duration_seconds % 60;
                 ui_canvas.setCursor(24, 40);
                 ui_canvas.printf("TIMER SETUP (#%d)", alarm_setup_entry_index + 1);
-                static const char* tf_names[4] = {"Name", "Hours", "Minutes", "Seconds"};
                 static const char* tf_hints[4] = {"ENT:edit name", ";/.:change", ";/.:change", ";/.:change"};
                 for (uint8_t i = 0; i < 4; i++) {
                     uint16_t rbg = (i == alarm_setup_field) ? accent : bg;

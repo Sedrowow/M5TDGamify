@@ -201,7 +201,7 @@ void TaskManager::printTask(uint16_t task_id) const {
     Serial.printf("  Difficulty: %d%%, Urgency: %d%%, Fear: %d\n", 
                   task->difficulty, task->urgency, task->fear);
     Serial.printf("  Repetitions: %d, Duration: %lu sec\n", task->repetition, (unsigned long)task->duration_seconds);
-    Serial.printf("  Reward: $%d, XP: %lu\n", task->reward_money, task->calculateXP());
+    Serial.printf("  Reward: $%lu, XP: %lu\n", (unsigned long)task->reward_money, (unsigned long)task->calculateXP());
     if (task->linked_skill_count > 0) {
         Serial.printf("  Linked Skills: %d\n", task->linked_skill_count);
         for (uint8_t i = 0; i < task->linked_skill_count; i++) {
