@@ -1276,8 +1276,15 @@ void notesDeleteBackward() {
     note_dirty = true;
 }
 
-bool notesIsNavKey(char c) {
-    return c == ';' || c == '.' || c == ',' || c == '/';
+// With CTRL held the keyboard reports the shifted symbol (CTRL+; arrives as ':'), so accept both.
+char notesNavKey(char c) {
+    switch (c) {
+        case ';': case ':': return ';';
+        case '.': case '>': return '.';
+        case ',': case '<': return ',';
+        case '/': case '?': return '/';
+        default: return 0;
+    }
 }
 
 void notesMoveCursor(char key, bool select) {
@@ -1315,8 +1322,9 @@ void notesPaste() {
 void notesApplyKeys(const std::vector<char>& word, bool enter, bool del, bool ctrl, bool alt) {
     if (ctrl || alt) {
         for (char ch : word) {
-            if (notesIsNavKey(ch)) {
-                notesMoveCursor(ch, alt);
+            char nav = notesNavKey(ch);
+            if (nav) {
+                notesMoveCursor(nav, alt);
                 continue;
             }
             if (!ctrl) continue;
@@ -5776,8 +5784,8 @@ void loop() {
             bool esc_chord = false;
             bool nav_only = true;
             for (char ch : rk.word) {
-                if (ch == '`' && rk.ctrl) esc_chord = true;
-                if (!notesIsNavKey(ch)) nav_only = false;
+                if ((ch == '`' || ch == '~') && rk.ctrl) esc_chord = true;
+                if (!notesNavKey(ch)) nav_only = false;
             }
             // Modified keys repeat only for cursor movement and selection.
             bool modified = rk.ctrl || rk.alt;
@@ -5845,7 +5853,11 @@ void loop() {
 
         // Notes editor owns the keyboard; OPT+key falls through to the normal shortcuts.
         if (notesEditorCaptures()) {
-            if (ks.ctrl && backtick_pressed) {
+            bool ctrl_esc = false;
+            for (char ch : ks.word) {
+                if (ch == '`' || ch == '~') ctrl_esc = ks.ctrl;
+            }
+            if (ctrl_esc) {
                 notesCloseEditor();
             } else if (ks.opt) {
                 for (char ch : ks.word) handleKeyInput(ch);
