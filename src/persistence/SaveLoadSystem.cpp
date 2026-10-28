@@ -8,11 +8,12 @@
 #define SD_SPI_MOSI_PIN 14
 #define SD_SPI_CS_PIN 12
 
-const char* SaveLoadSystem::BASE_DIR = "/FiveITE";
-const char* SaveLoadSystem::PROFILES_DIR = "/FiveITE/profiles";
-const char* SaveLoadSystem::GLOBAL_FILE = "/FiveITE/global.cfg";
-const char* SaveLoadSystem::INDEX_FILE = "/FiveITE/profiles/index.dat";
-const char* SaveLoadSystem::SHARED_SHOP_ITEMS_FILE = "/FiveITE/shop_items_shared.dat";
+const char* SaveLoadSystem::BASE_DIR = "/M5TDG";
+const char* SaveLoadSystem::LEGACY_BASE_DIR = "/FiveITE";
+const char* SaveLoadSystem::PROFILES_DIR = "/M5TDG/profiles";
+const char* SaveLoadSystem::GLOBAL_FILE = "/M5TDG/global.cfg";
+const char* SaveLoadSystem::INDEX_FILE = "/M5TDG/profiles/index.dat";
+const char* SaveLoadSystem::SHARED_SHOP_ITEMS_FILE = "/M5TDG/shop_items_shared.dat";
 
 SaveLoadSystem::SaveLoadSystem()
     : last_error(""),
@@ -341,9 +342,18 @@ bool SaveLoadSystem::begin() {
         return false;
     }
 
+    // Older firmware stored everything in /FiveITE; keep that data by renaming it.
+    if (!active_fs->exists(BASE_DIR) && active_fs->exists(LEGACY_BASE_DIR)) {
+        if (!active_fs->rename(LEGACY_BASE_DIR, BASE_DIR)) {
+            last_error = "Could not rename legacy save folder";
+            Serial.println(last_error);
+        }
+    }
+
     if (!ensureDirRecursive(BASE_DIR) || !ensureDirRecursive(PROFILES_DIR)) {
         return false;
     }
+    ensureDirRecursive(notesDir().c_str());
 
     if (!active_fs->exists(SHARED_SHOP_ITEMS_FILE)) {
         writeTextFile(String(SHARED_SHOP_ITEMS_FILE), "# shared shop items\n");

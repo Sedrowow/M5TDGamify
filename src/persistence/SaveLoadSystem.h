@@ -41,6 +41,7 @@ private:
     String active_profile_description;
 
     static const char* BASE_DIR;
+    static const char* LEGACY_BASE_DIR;
     static const char* PROFILES_DIR;
     static const char* GLOBAL_FILE;
     static const char* INDEX_FILE;

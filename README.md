@@ -25,7 +25,7 @@ pio run -e m5stack-cardputer -t upload
 pio run -e m5stack-cardputer -t monitor
 ```
 
-The serial monitor uses 115200 baud.
+The serial monitor uses 115200 baud. `platformio.ini` pins the platform (espressif32 7.1.3) and the M5 libraries; newer Arduino-ESP32 cores changed the audio drivers and are untested on the device.
 
 ## Controls
 
@@ -51,7 +51,7 @@ In **Settings > Health**, `P` switches the HUD display between percentage and po
 
 ## Notes Editor
 
-Notes are stored as `.txt` files in `notes/<category>/` inside the save folder (maximum 4000 characters per note). Each category is a subfolder and also appears as a sub-selection of the Notes entry in the screen selector.
+Notes are stored as `.txt` files in `M5TDG/notes/<category>/` (maximum 4000 characters per note). Each category is a subfolder and also appears as a sub-selection of the Notes entry in the screen selector.
 
 While a note is open, the full keyboard types into it, so the normal shortcuts are suspended:
 
@@ -74,7 +74,7 @@ Player XP requirements start at 1,500 XP for level 2 and grow by a factor of 1.2
 
 ## Storage
 
-The firmware uses SD storage when available and falls back to SPIFFS for local profile data. Global device settings are stored separately from profile data. Shop catalog data is shared while inventory and shop runtime state are profile-specific. The Save/Load screen provides manual profile save/load and shared shop catalog operations.
+The firmware uses SD storage when available and falls back to SPIFFS for local profile data. Everything lives in the `M5TDG` root folder; an existing `FiveITE` folder from older firmware is renamed to `M5TDG` on first boot. Global device settings are stored separately from profile data. Shop catalog data is shared while inventory and shop runtime state are profile-specific. The Save/Load screen provides manual profile save/load and shared shop catalog operations.
 
 ## Source Layout
 
