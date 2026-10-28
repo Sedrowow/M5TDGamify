@@ -12,10 +12,10 @@ TimeSync::TimeSync()
 
 void TimeSync::configureNTP() const {
     // Configure SNTP
-    sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    sntp_setservername(0, NTP_SERVER_0);
-    sntp_setservername(1, NTP_SERVER_1);
-    sntp_init();
+    esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, NTP_SERVER_0);
+    esp_sntp_setservername(1, NTP_SERVER_1);
+    esp_sntp_init();
 }
 
 void TimeSync::setTimezoneOffset(int8_t offset) {
@@ -84,7 +84,7 @@ bool TimeSync::syncWithWiFi(const char* ssid, const char* password, uint32_t tim
     wifi_connected = true;
 
     // Stop any running SNTP instance before re-init to avoid crash.
-    sntp_stop();
+    esp_sntp_stop();
     configureNTP();
 
     // Wait for NTP sync
