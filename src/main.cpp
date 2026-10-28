@@ -944,6 +944,8 @@ bool notes_editing = false;
 bool note_dirty = false;
 String note_buffer;
 uint16_t note_cursor = 0;
+int32_t note_sel_anchor = -1;
+String note_clipboard;
 uint16_t note_scroll_line = 0;
 String note_open_category;
 String note_open_name;
@@ -1123,6 +1125,7 @@ void notesOpen(const String& category, const String& name) {
     note_open_name = name;
     note_buffer = content;
     note_cursor = 0;
+    note_sel_anchor = -1;
     note_scroll_line = 0;
     note_dirty = false;
     note_undo.clear();
@@ -1196,6 +1199,7 @@ void notesRecordUndo(uint8_t kind) {
 void notesRestore(const NoteSnapshot& snapshot) {
     note_buffer = snapshot.text;
     note_cursor = snapshot.cursor <= note_buffer.length() ? snapshot.cursor : note_buffer.length();
+    note_sel_anchor = -1;
     note_dirty = true;
     note_last_edit_kind = 255;
 }
@@ -1222,42 +1226,115 @@ void notesRedo() {
     notesRestore(snapshot);
 }
 
-void notesInsertChar(char c) {
-    if (note_buffer.length() >= NOTE_MAX_CHARS) return;
-    notesRecordUndo(c == '\n' ? 2 : 0);
-    note_buffer = note_buffer.substring(0, note_cursor) + String(c) + note_buffer.substring(note_cursor);
-    note_cursor++;
+bool notesHasSelection() {
+    return note_sel_anchor >= 0 && note_sel_anchor != (int32_t)note_cursor;
+}
+
+void notesSelectionRange(uint16_t& from, uint16_t& to) {
+    uint16_t anchor = (uint16_t)note_sel_anchor;
+    from = anchor < note_cursor ? anchor : note_cursor;
+    to = anchor < note_cursor ? note_cursor : anchor;
+}
+
+// Replaces the selection (if any) with the text as one undo step.
+void notesInsertText(const String& inserted) {
+    uint16_t from = note_cursor;
+    uint16_t to = note_cursor;
+    bool had_selection = notesHasSelection();
+    if (had_selection) notesSelectionRange(from, to);
+    if (note_buffer.length() - (to - from) + inserted.length() > NOTE_MAX_CHARS) {
+        setStatus("Note is full", 800);
+        return;
+    }
+    bool single_char = inserted.length() == 1 && inserted[0] != '\n';
+    notesRecordUndo(single_char && !had_selection ? 0 : 2);
+    note_buffer = note_buffer.substring(0, from) + inserted + note_buffer.substring(to);
+    note_cursor = from + inserted.length();
+    note_sel_anchor = -1;
     note_dirty = true;
 }
 
-// Plain keys type; FN + arrow-symbol keys (; . , /) move the cursor; CTRL + Z/Y/S undo, redo, save.
-void notesApplyKeys(const std::vector<char>& word, bool enter, bool del, bool fn, bool ctrl) {
-    if (ctrl) {
+void notesInsertChar(char c) {
+    notesInsertText(String(c));
+}
+
+void notesDeleteBackward() {
+    if (notesHasSelection()) {
+        uint16_t from, to;
+        notesSelectionRange(from, to);
+        notesRecordUndo(2);
+        note_buffer.remove(from, to - from);
+        note_cursor = from;
+    } else if (note_cursor > 0) {
+        notesRecordUndo(1);
+        note_buffer.remove(note_cursor - 1, 1);
+        note_cursor--;
+    } else {
+        return;
+    }
+    note_sel_anchor = -1;
+    note_dirty = true;
+}
+
+bool notesIsNavKey(char c) {
+    return c == ';' || c == '.' || c == ',' || c == '/';
+}
+
+void notesMoveCursor(char key, bool select) {
+    if (!select) note_sel_anchor = -1;
+    else if (note_sel_anchor < 0) note_sel_anchor = note_cursor;
+
+    if (key == ';') notesMoveVertical(-1);
+    else if (key == '.') notesMoveVertical(1);
+    else if (key == ',') { if (note_cursor > 0) note_cursor--; }
+    else if (key == '/') { if (note_cursor < note_buffer.length()) note_cursor++; }
+}
+
+void notesCopySelection() {
+    if (!notesHasSelection()) {
+        setStatus("Nothing selected", 800);
+        return;
+    }
+    uint16_t from, to;
+    notesSelectionRange(from, to);
+    note_clipboard = note_buffer.substring(from, to);
+    char msg[32];
+    snprintf(msg, sizeof(msg), "Copied %u chars", (unsigned)(to - from));
+    setStatus(msg, 800);
+}
+
+void notesPaste() {
+    if (note_clipboard.length() == 0) {
+        setStatus("Clipboard empty", 800);
+        return;
+    }
+    notesInsertText(note_clipboard);
+}
+
+// CTRL + nav keys (; . , /) move the cursor, ALT + nav keys select; CTRL + Z/Y/S/C/V undo, redo, save, copy, paste.
+void notesApplyKeys(const std::vector<char>& word, bool enter, bool del, bool ctrl, bool alt) {
+    if (ctrl || alt) {
         for (char ch : word) {
-            if (ch == 'z' || ch == 'Z') notesUndo();
-            else if (ch == 'y' || ch == 'Y') notesRedo();
-            else if (ch == 's' || ch == 'S') {
+            if (notesIsNavKey(ch)) {
+                notesMoveCursor(ch, alt);
+                continue;
+            }
+            if (!ctrl) continue;
+            char letter = (char)tolower((unsigned char)ch);
+            if (letter == 'z') notesUndo();
+            else if (letter == 'y') notesRedo();
+            else if (letter == 'c') notesCopySelection();
+            else if (letter == 'v') notesPaste();
+            else if (letter == 's') {
                 if (notesSaveCurrent()) setStatus("Note saved", 1000);
             }
         }
         return;
     }
-    if (del && note_cursor > 0) {
-        notesRecordUndo(1);
-        note_buffer.remove(note_cursor - 1, 1);
-        note_cursor--;
-        note_dirty = true;
-    }
+    if (del) notesDeleteBackward();
     if (enter) notesInsertChar('\n');
     for (char ch : word) {
-        if (fn) {
-            if (ch == ';') notesMoveVertical(-1);
-            else if (ch == '.') notesMoveVertical(1);
-            else if (ch == ',') { if (note_cursor > 0) note_cursor--; }
-            else if (ch == '/') { if (note_cursor < note_buffer.length()) note_cursor++; }
-        } else if (isprint((unsigned char)ch)) {
-            notesInsertChar(ch);
-        }
+        if (isprint((unsigned char)ch)) notesInsertChar(ch);
     }
 }
 
@@ -4064,7 +4141,7 @@ void renderUI() {
         scroll_text += "Read guide  H:Close help overlay  TAB:Menu";
     } else if (current_screen == UI_NOTES) {
         scroll_text += notes_editing
-            ? "Type freely  FN+;/./,// Move  CTRL+Z/Y Undo/Redo  CTRL+S Save  FN+ESC:Back  TAB:Menu  OPT+key:Shortcut"
+            ? "Type freely  CTRL+;/./,// Move  ALT+;/./,// Select  CTRL+C/V Copy/Paste  CTRL+Z/Y Undo/Redo  CTRL+S Save  CTRL+`:Back  TAB:Menu  OPT+key:Shortcut"
             : ";/.:Note  ,/:Category  ENT:Open  N:New note  C:New category  TAB:Menu";
     } else if (current_screen == UI_ALARMS) {
         scroll_text += "LEFT:Alarms/Timers  ;/.:Select  ENT:Toggle  DEL:Remove  A:Add  T:Add timer  SPC:Setup  TAB:Menu";
@@ -5099,7 +5176,7 @@ void renderUI() {
         } else if (help_page == 3) {
             ui_canvas.println("Changelog");
             ui_canvas.println("Notes screen with categories");
-            ui_canvas.println("Editor: undo/redo, CTRL+S, autosave");
+            ui_canvas.println("Editor: select, copy, paste, undo");
             ui_canvas.println("Main XP edits can lower levels");
             ui_canvas.println("Numerical HP, level-based max HP");
             ui_canvas.println("Shop max HP effects, skill details");
@@ -5127,11 +5204,28 @@ void renderUI() {
             if (note_dirty) ui_canvas.print(" *");
 
             ui_canvas.setTextColor(text, bg);
+            uint16_t sel_from = 0;
+            uint16_t sel_to = 0;
+            bool has_selection = notesHasSelection();
+            if (has_selection) notesSelectionRange(sel_from, sel_to);
             for (uint8_t i = 0; i < NOTE_VISIBLE_LINES; i++) {
                 uint16_t line = note_scroll_line + i;
                 if (line >= starts.size()) break;
+                uint16_t line_start = starts[line];
+                uint16_t line_end = ends[line];
+                uint16_t mark_from = sel_from > line_start ? sel_from : line_start;
+                uint16_t mark_to = sel_to < line_end ? sel_to : line_end;
                 ui_canvas.setCursor(6, 46 + i * 9);
-                ui_canvas.print(note_buffer.substring(starts[line], ends[line]));
+                if (has_selection && mark_from < mark_to) {
+                    ui_canvas.setTextColor(text, bg);
+                    ui_canvas.print(note_buffer.substring(line_start, mark_from));
+                    ui_canvas.setTextColor(BLACK, accent);
+                    ui_canvas.print(note_buffer.substring(mark_from, mark_to));
+                    ui_canvas.setTextColor(text, bg);
+                    ui_canvas.print(note_buffer.substring(mark_to, line_end));
+                } else {
+                    ui_canvas.print(note_buffer.substring(line_start, line_end));
+                }
             }
 
             int cursor_x = 6 + (note_cursor - starts[cursor_line]) * 6;
@@ -5306,9 +5400,10 @@ void renderUI() {
         } else if (current_screen == UI_NOTES) {
             ui_canvas.println("NOTES: text files per category");
             ui_canvas.println("N=new note  C=new category");
-            ui_canvas.println("Editing: FN+;/./,// = move");
+            ui_canvas.println("Editing: CTRL+;/./,// = move");
+            ui_canvas.println("ALT+nav select  CTRL+C/V copy/paste");
             ui_canvas.println("CTRL+Z/Y/S undo redo save");
-            ui_canvas.println("FN+ESC=back  OPT+key=shortcut");
+            ui_canvas.println("CTRL+`=back  OPT+key=shortcut");
         } else if (current_screen == UI_HELP) {
             ui_canvas.println("HELP: browse categorized pages");
             ui_canvas.println("LEFT/RIGHT changes the page");
@@ -5679,13 +5774,18 @@ void loop() {
             auto& rk = M5Cardputer.Keyboard.keysState();
             bool del_held = M5Cardputer.Keyboard.isKeyPressed(KEY_BACKSPACE);
             bool esc_chord = false;
+            bool nav_only = true;
             for (char ch : rk.word) {
-                if (ch == '`' && rk.fn) esc_chord = true;
+                if (ch == '`' && rk.ctrl) esc_chord = true;
+                if (!notesIsNavKey(ch)) nav_only = false;
             }
-            bool held = (!rk.word.empty() || del_held) && !rk.opt && !rk.ctrl && !esc_chord;
+            // Modified keys repeat only for cursor movement and selection.
+            bool modified = rk.ctrl || rk.alt;
+            bool held = (!rk.word.empty() || del_held) && !rk.opt && !esc_chord &&
+                        (!modified || (nav_only && !rk.word.empty()));
             if (held && millis() - repeat_started_ms > 350 && millis() - repeat_last_ms >= 70) {
                 repeat_last_ms = millis();
-                notesApplyKeys(rk.word, false, del_held, rk.fn, false);
+                notesApplyKeys(rk.word, false, del_held, rk.ctrl, rk.alt);
             }
         }
     }
@@ -5745,12 +5845,12 @@ void loop() {
 
         // Notes editor owns the keyboard; OPT+key falls through to the normal shortcuts.
         if (notesEditorCaptures()) {
-            if (ks.fn && backtick_pressed) {
+            if (ks.ctrl && backtick_pressed) {
                 notesCloseEditor();
             } else if (ks.opt) {
                 for (char ch : ks.word) handleKeyInput(ch);
             } else {
-                notesApplyKeys(ks.word, ks.enter, del_pressed, ks.fn, ks.ctrl);
+                notesApplyKeys(ks.word, ks.enter, del_pressed, ks.ctrl, ks.alt);
             }
             return;
         }

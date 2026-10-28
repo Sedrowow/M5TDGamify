@@ -57,10 +57,13 @@ While a note is open, the full keyboard types into it, so the normal shortcuts a
 
 | Keys | Action |
 |---|---|
-| `FN` + `;` `.` `,` `/` | Move the cursor up, down, left, right (hold for continuous movement) |
+| `CTRL` + `;` `.` `,` `/` | Move the cursor up, down, left, right (hold for continuous movement) |
+| `ALT` + `;` `.` `,` `/` | Select text while moving the cursor (hold for continuous selection) |
+| `DEL` / typing / paste with a selection | Deletes or replaces the whole selection |
+| `CTRL+C` / `CTRL+V` | Copy the selection / paste at the cursor; the clipboard is shared between notes |
 | `CTRL+Z` / `CTRL+Y` | Undo / redo (last 16 steps; typing within one second is grouped) |
 | `CTRL+S` | Save now |
-| `FN+ESC` | Save and return to the note and category selection |
+| `CTRL+` backtick (`ESC`) | Save and return to the note and category selection |
 | `TAB` | Save and open the screen selector |
 | `OPT` + shortcut | Use a normal shortcut, for example `OPT+L` for health or `OPT+H` for help |
 
