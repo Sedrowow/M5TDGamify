@@ -15,6 +15,8 @@ SettingsSystem::SettingsSystem() : scanned_count(0) {
     _settings.health_level_scaling = false;
     _settings.health_level_percent = false;
     _settings.health_level_growth = 10;
+    _settings.notes_autosave = true;
+    _settings.notes_autosave_minutes = 5;
     _settings.health_wake_hour = 8;
     _settings.health_sleep_hour = 22;
     _settings.visual_feedback_enabled = true;

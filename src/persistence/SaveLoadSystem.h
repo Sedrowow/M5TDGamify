@@ -66,6 +66,11 @@ private:
     bool ensureProfileInIndex(const String& name, const String& description);
 
     bool parseKeyValueLine(const String& line, String& key, String& value) const;
+    String notesDir() const { return String(BASE_DIR) + "/notes"; }
+    String noteCategoryDir(const String& category) const { return notesDir() + "/" + category; }
+    String notePath(const String& category, const String& name) const {
+        return noteCategoryDir(category) + "/" + name + ".txt";
+    }
     bool loadProfileStats(const String& profile_name, ProfileInfo& profile) const;
 
 public:
@@ -123,6 +128,14 @@ public:
                              TimerEntry timers[], uint8_t& timer_count, uint8_t max_timers);
 
     String getLastError() const { return last_error; }
+
+    // Notes live in <BASE_DIR>/notes/<category>/<note>.txt
+    bool listNoteCategories(String out[], uint8_t max_count, uint8_t& out_count);
+    bool listNotes(const String& category, String out[], uint8_t max_count, uint8_t& out_count);
+    bool createNoteCategory(const String& name, String& saved_name);
+    bool createNote(const String& category, const String& name, String& saved_name);
+    bool readNote(const String& category, const String& name, String& content);
+    bool writeNote(const String& category, const String& name, const String& content);
 };
 
 #endif

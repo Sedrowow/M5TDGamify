@@ -1235,6 +1235,8 @@ bool SaveLoadSystem::saveGlobalConfig(const GlobalSettings& cfg) {
     data += "health_level_scaling=" + String(cfg.health_level_scaling ? 1 : 0) + "\n";
     data += "health_level_percent=" + String(cfg.health_level_percent ? 1 : 0) + "\n";
     data += "health_level_growth=" + String((int)cfg.health_level_growth) + "\n";
+    data += "notes_autosave=" + String(cfg.notes_autosave ? 1 : 0) + "\n";
+    data += "notes_autosave_minutes=" + String((int)cfg.notes_autosave_minutes) + "\n";
     data += "health_wake=" + String((int)cfg.health_wake_hour) + "\n";
     data += "health_sleep=" + String((int)cfg.health_sleep_hour) + "\n";
     data += "visual_feedback=" + String(cfg.visual_feedback_enabled ? 1 : 0) + "\n";
@@ -1311,6 +1313,13 @@ bool SaveLoadSystem::loadGlobalConfig(GlobalSettings& cfg) {
                 if (v < 1) v = 1;
                 if (v > 10000) v = 10000;
                 cfg.health_level_growth = (uint16_t)v;
+            } else if (key == "notes_autosave") {
+                cfg.notes_autosave = value.toInt() != 0;
+            } else if (key == "notes_autosave_minutes") {
+                int v = value.toInt();
+                if (v < 1) v = 1;
+                if (v > 60) v = 60;
+                cfg.notes_autosave_minutes = (uint8_t)v;
             } else if (key == "health_wake") {
                 cfg.health_wake_hour = (uint8_t)value.toInt();
             } else if (key == "health_sleep") {
@@ -1345,6 +1354,70 @@ bool SaveLoadSystem::loadGlobalConfig(GlobalSettings& cfg) {
         cfg.saved_wifi_count = 1;
     }
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Notes
+// ---------------------------------------------------------------------------
+
+static String baseName(const String& path) {
+    int slash = path.lastIndexOf('/');
+    return slash >= 0 ? path.substring(slash + 1) : path;
+}
+
+bool SaveLoadSystem::listNoteCategories(String out[], uint8_t max_count, uint8_t& out_count) {
+    out_count = 0;
+    if (!active_fs) return false;
+    if (!ensureDirRecursive(notesDir().c_str())) return false;
+
+    File dir = active_fs->open(notesDir().c_str());
+    if (!dir || !dir.isDirectory()) return false;
+
+    File entry = dir.openNextFile();
+    while (entry && out_count < max_count) {
+        if (entry.isDirectory()) out[out_count++] = baseName(String(entry.name()));
+        entry = dir.openNextFile();
+    }
+    return true;
+}
+
+bool SaveLoadSystem::listNotes(const String& category, String out[], uint8_t max_count, uint8_t& out_count) {
+    out_count = 0;
+    if (!active_fs || category.length() == 0) return false;
+
+    File dir = active_fs->open(noteCategoryDir(category).c_str());
+    if (!dir || !dir.isDirectory()) return false;
+
+    File entry = dir.openNextFile();
+    while (entry && out_count < max_count) {
+        String name = baseName(String(entry.name()));
+        if (!entry.isDirectory() && name.endsWith(".txt")) {
+            out[out_count++] = name.substring(0, name.length() - 4);
+        }
+        entry = dir.openNextFile();
+    }
+    return true;
+}
+
+bool SaveLoadSystem::createNoteCategory(const String& name, String& saved_name) {
+    saved_name = sanitizeProfileName(name);
+    return ensureDirRecursive(noteCategoryDir(saved_name).c_str());
+}
+
+bool SaveLoadSystem::createNote(const String& category, const String& name, String& saved_name) {
+    saved_name = sanitizeProfileName(name);
+    String path = notePath(category, saved_name);
+    if (active_fs && active_fs->exists(path.c_str())) return true;
+    return writeTextFile(path, "");
+}
+
+bool SaveLoadSystem::readNote(const String& category, const String& name, String& content) {
+    content = "";
+    return readTextFile(notePath(category, name), content);
+}
+
+bool SaveLoadSystem::writeNote(const String& category, const String& name, const String& content) {
+    return writeTextFile(notePath(category, name), content);
 }
 
 bool SaveLoadSystem::saveAlarmsAndTimers(const AlarmEntry alarms[], uint8_t alarm_count,

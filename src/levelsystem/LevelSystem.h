@@ -54,6 +54,12 @@ public:
     uint16_t addXPWithMultiplier(uint32_t xp_amount, float health_multiplier);
 
     /**
+     * Remove XP; dropping below 0 XP lowers the level (never below level 1).
+     * Lifetime XP is left untouched.
+     */
+    void removeXP(uint32_t xp_amount);
+
+    /**
      * Get current level
      */
     uint16_t getLevel() const { return current_level; }

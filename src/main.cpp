@@ -47,7 +47,8 @@ enum UiScreen {
     UI_SAVE_LOAD = 6,
     UI_SETTINGS = 7,
     UI_HELP = 8,
-    UI_ALARMS = 9
+    UI_ALARMS = 9,
+    UI_NOTES = 10
 };
 
 enum TextInputPurpose {
@@ -69,7 +70,9 @@ enum TextInputPurpose {
     INPUT_EDIT_SKILL_DETAILS = 15,
     INPUT_ALARM_NAME = 16,
     INPUT_TIMER_NAME = 17,
-    INPUT_MATH_QUIZ_ANSWER = 18
+    INPUT_MATH_QUIZ_ANSWER = 18,
+    INPUT_NEW_NOTE_CATEGORY = 19,
+    INPUT_NEW_NOTE_NAME = 20
 };
 
 enum NavCommand {
@@ -250,7 +253,8 @@ enum SettingsSection {
     SETT_RAND_TASK = 4,
     SETT_FEEDBACK = 5,
     SETT_SKILL_XP = 6,
-    SETT_SECTION_COUNT = 7
+    SETT_NOTES = 7,
+    SETT_SECTION_COUNT = 8
 };
 SettingsSection sett_section = SETT_WIFI;
 uint8_t sett_wifi_sel = 0;         // selected scanned network index
@@ -289,7 +293,7 @@ uint32_t control_scroll_last_update = 0;
 // Screen selector state
 bool screen_selector_active = false;
 uint8_t screen_selector_index = 0;  // 0=DASH, 1=TASKS, 2=SKILLS, etc
-const uint8_t SCREEN_SELECTOR_COUNT = 10;  // DASH, TASKS, SKILLS, SHOP, PROF, INV, SAVE, SETTINGS, HELP, ALARMS
+const uint8_t SCREEN_SELECTOR_COUNT = 11;  // DASH, TASKS, SKILLS, SHOP, ALARMS, PROF, INV, SAVE, SETTINGS, NOTES, HELP
 bool screen_selector_sub_active = false;
 uint8_t screen_selector_sub_index = 0;
 
@@ -902,14 +906,14 @@ void drawSpiderSkillsTotalXP(int cx, int cy, int radius, uint16_t category_id) {
 }
 
 UiScreen indexToScreen(uint8_t idx) {
-    // Order: DASH, TASKS, SKILLS, SHOP, ALARMS, PROF, INV, SAVE, SETTINGS, HELP
-    static const UiScreen screens[] = {UI_DASHBOARD, UI_TASKS, UI_SKILLS, UI_SHOP, UI_ALARMS, UI_PROFILES, UI_INVENTORY, UI_SAVE_LOAD, UI_SETTINGS, UI_HELP};
+    // Order: DASH, TASKS, SKILLS, SHOP, ALARMS, PROF, INV, SAVE, SETTINGS, NOTES, HELP
+    static const UiScreen screens[] = {UI_DASHBOARD, UI_TASKS, UI_SKILLS, UI_SHOP, UI_ALARMS, UI_PROFILES, UI_INVENTORY, UI_SAVE_LOAD, UI_SETTINGS, UI_NOTES, UI_HELP};
     if (idx < SCREEN_SELECTOR_COUNT) return screens[idx];
     return UI_DASHBOARD;
 }
 
 uint8_t screenToIndex(UiScreen screen) {
-    static const UiScreen screens[] = {UI_DASHBOARD, UI_TASKS, UI_SKILLS, UI_SHOP, UI_ALARMS, UI_PROFILES, UI_INVENTORY, UI_SAVE_LOAD, UI_SETTINGS, UI_HELP};
+    static const UiScreen screens[] = {UI_DASHBOARD, UI_TASKS, UI_SKILLS, UI_SHOP, UI_ALARMS, UI_PROFILES, UI_INVENTORY, UI_SAVE_LOAD, UI_SETTINGS, UI_NOTES, UI_HELP};
     for (uint8_t i = 0; i < SCREEN_SELECTOR_COUNT; i++) {
         if (screens[i] == screen) return i;
     }
@@ -917,16 +921,47 @@ uint8_t screenToIndex(UiScreen screen) {
 }
 
 const char* indexToScreenName(uint8_t idx) {
-    static const char* names[] = {"DASH", "TASKS", "SKILLS", "SHOP", "ALARMS", "PROF", "INV", "SAVE", "SETTINGS", "HELP"};
+    static const char* names[] = {"DASH", "TASKS", "SKILLS", "SHOP", "ALARMS", "PROF", "INV", "SAVE", "SETTINGS", "NOTES", "HELP"};
     if (idx < SCREEN_SELECTOR_COUNT) return names[idx];
     return "DASH";
 }
 
-static const char* sett_sub_names[7] = {"WiFi", "Timezone", "Time", "Health", "Rand Task", "Feedback", "Skill XP"};
+static const char* sett_sub_names[8] = {"WiFi", "Timezone", "Time", "Health", "Rand Task", "Feedback", "Skill XP", "Notes"};
 
+// Notes state (files live in <saves>/notes/<category>/<note>.txt)
+static const uint8_t NOTE_MAX_CATEGORIES = 16;
+static const uint8_t NOTE_MAX_FILES = 32;
+static const uint8_t NOTE_COLS = 37;
+static const uint8_t NOTE_VISIBLE_LINES = 8;
+static const uint16_t NOTE_MAX_CHARS = 4000;
+String note_categories[NOTE_MAX_CATEGORIES];
+uint8_t note_category_count = 0;
+uint8_t selected_note_category = 0;
+String note_files[NOTE_MAX_FILES];
+uint8_t note_file_count = 0;
+uint8_t selected_note_file = 0;
+bool notes_editing = false;
+bool note_dirty = false;
+String note_buffer;
+uint16_t note_cursor = 0;
+uint16_t note_scroll_line = 0;
+String note_open_category;
+String note_open_name;
+uint32_t note_last_save_ms = 0;
+
+struct NoteSnapshot {
+    String text;
+    uint16_t cursor;
+};
+static const uint8_t NOTE_UNDO_DEPTH = 16;
+std::vector<NoteSnapshot> note_undo;
+std::vector<NoteSnapshot> note_redo;
+uint32_t note_last_edit_ms = 0;
+uint8_t note_last_edit_kind = 255;
 uint8_t getSelectorSubCount(uint8_t screen_idx) {
     if (screen_idx == 2) return (uint8_t)skill_system.getActiveCategoryCount(); // SKILLS
-    if (screen_idx == 8) return 7; // SETTINGS (index 8 in new order)
+    if (screen_idx == 8) return 8; // SETTINGS (index 8 in new order)
+    if (screen_idx == 9) return note_category_count; // NOTES
     return 0;
 }
 
@@ -935,7 +970,8 @@ const char* getSelectorSubName(uint8_t screen_idx, uint8_t sub_idx) {
         const SkillCategory* cat = skill_system.getCategoryByActiveIndex(sub_idx);
         return cat ? cat->name : "?";
     }
-    if (screen_idx == 8 && sub_idx < 7) return sett_sub_names[sub_idx];
+    if (screen_idx == 8 && sub_idx < 8) return sett_sub_names[sub_idx];
+    if (screen_idx == 9 && sub_idx < note_category_count) return note_categories[sub_idx].c_str();
     return "?";
 }
 
@@ -1051,6 +1087,183 @@ void refreshProfiles() {
     if (selected_profile_index >= profile_count) {
         selected_profile_index = profile_count - 1;
     }
+}
+
+void notesRefreshFiles() {
+    note_file_count = 0;
+    if (storage_ready && note_category_count > 0) {
+        save_load_system.listNotes(note_categories[selected_note_category], note_files, NOTE_MAX_FILES, note_file_count);
+    }
+    if (selected_note_file >= note_file_count) selected_note_file = note_file_count > 0 ? note_file_count - 1 : 0;
+}
+
+void notesRefreshAll() {
+    note_category_count = 0;
+    if (storage_ready) save_load_system.listNoteCategories(note_categories, NOTE_MAX_CATEGORIES, note_category_count);
+    if (selected_note_category >= note_category_count) selected_note_category = note_category_count > 0 ? note_category_count - 1 : 0;
+    notesRefreshFiles();
+}
+
+bool notesSaveCurrent() {
+    if (!notes_editing || !note_dirty) return true;
+    note_last_save_ms = millis();
+    bool ok = save_load_system.writeNote(note_open_category, note_open_name, note_buffer);
+    if (ok) note_dirty = false;
+    else setStatus("Note save failed");
+    return ok;
+}
+
+void notesOpen(const String& category, const String& name) {
+    String content;
+    if (!save_load_system.readNote(category, name, content)) {
+        setStatus("Cannot open note");
+        return;
+    }
+    note_open_category = category;
+    note_open_name = name;
+    note_buffer = content;
+    note_cursor = 0;
+    note_scroll_line = 0;
+    note_dirty = false;
+    note_undo.clear();
+    note_redo.clear();
+    note_last_edit_kind = 255;
+    note_last_save_ms = millis();
+    notes_editing = true;
+}
+
+void notesCloseEditor() {
+    if (notesSaveCurrent()) setStatus("Note saved", 1000);
+    notes_editing = false;
+    notesRefreshFiles();
+}
+
+// Hard-wraps at NOTE_COLS; a line ends at '\n' or when it is full.
+void notesBuildLines(std::vector<uint16_t>& starts, std::vector<uint16_t>& ends) {
+    starts.clear();
+    ends.clear();
+    uint16_t len = note_buffer.length();
+    uint16_t start = 0;
+    for (uint16_t i = 0; i < len; i++) {
+        if (note_buffer[i] == '\n') {
+            starts.push_back(start);
+            ends.push_back(i);
+            start = i + 1;
+        } else if (i - start >= NOTE_COLS) {
+            starts.push_back(start);
+            ends.push_back(i);
+            start = i;
+        }
+    }
+    starts.push_back(start);
+    ends.push_back(len);
+}
+
+uint16_t notesCursorLine(const std::vector<uint16_t>& starts, const std::vector<uint16_t>& ends) {
+    for (uint16_t k = 0; k < starts.size(); k++) {
+        bool last = (k + 1 >= starts.size());
+        if (note_cursor <= ends[k] && (last || note_cursor < starts[k + 1])) return k;
+    }
+    return starts.size() - 1;
+}
+
+void notesMoveVertical(int dir) {
+    std::vector<uint16_t> starts, ends;
+    notesBuildLines(starts, ends);
+    int k = notesCursorLine(starts, ends);
+    int target = k + dir;
+    if (target < 0 || target >= (int)starts.size()) return;
+    uint16_t col = note_cursor - starts[k];
+    uint16_t len = ends[target] - starts[target];
+    // A wrapped line's end offset belongs to the next line, so stay inside it.
+    bool wrapped = (target + 1 < (int)starts.size()) && ends[target] == starts[target + 1];
+    if (wrapped && len > 0) len--;
+    note_cursor = starts[target] + (col < len ? col : len);
+}
+
+// Kinds: 0 typing, 1 deletion, 2 newline; consecutive typing/deleting within 1s shares one undo step.
+void notesRecordUndo(uint8_t kind) {
+    uint32_t now = millis();
+    bool coalesce = kind != 2 && kind == note_last_edit_kind && now - note_last_edit_ms < 1000 && !note_undo.empty();
+    note_last_edit_ms = now;
+    note_last_edit_kind = kind;
+    note_redo.clear();
+    if (coalesce) return;
+    if (note_undo.size() >= NOTE_UNDO_DEPTH) note_undo.erase(note_undo.begin());
+    note_undo.push_back({note_buffer, note_cursor});
+}
+
+void notesRestore(const NoteSnapshot& snapshot) {
+    note_buffer = snapshot.text;
+    note_cursor = snapshot.cursor <= note_buffer.length() ? snapshot.cursor : note_buffer.length();
+    note_dirty = true;
+    note_last_edit_kind = 255;
+}
+
+void notesUndo() {
+    if (note_undo.empty()) {
+        setStatus("Nothing to undo", 800);
+        return;
+    }
+    note_redo.push_back({note_buffer, note_cursor});
+    NoteSnapshot snapshot = note_undo.back();
+    note_undo.pop_back();
+    notesRestore(snapshot);
+}
+
+void notesRedo() {
+    if (note_redo.empty()) {
+        setStatus("Nothing to redo", 800);
+        return;
+    }
+    note_undo.push_back({note_buffer, note_cursor});
+    NoteSnapshot snapshot = note_redo.back();
+    note_redo.pop_back();
+    notesRestore(snapshot);
+}
+
+void notesInsertChar(char c) {
+    if (note_buffer.length() >= NOTE_MAX_CHARS) return;
+    notesRecordUndo(c == '\n' ? 2 : 0);
+    note_buffer = note_buffer.substring(0, note_cursor) + String(c) + note_buffer.substring(note_cursor);
+    note_cursor++;
+    note_dirty = true;
+}
+
+// Plain keys type; FN + arrow-symbol keys (; . , /) move the cursor; CTRL + Z/Y/S undo, redo, save.
+void notesApplyKeys(const std::vector<char>& word, bool enter, bool del, bool fn, bool ctrl) {
+    if (ctrl) {
+        for (char ch : word) {
+            if (ch == 'z' || ch == 'Z') notesUndo();
+            else if (ch == 'y' || ch == 'Y') notesRedo();
+            else if (ch == 's' || ch == 'S') {
+                if (notesSaveCurrent()) setStatus("Note saved", 1000);
+            }
+        }
+        return;
+    }
+    if (del && note_cursor > 0) {
+        notesRecordUndo(1);
+        note_buffer.remove(note_cursor - 1, 1);
+        note_cursor--;
+        note_dirty = true;
+    }
+    if (enter) notesInsertChar('\n');
+    for (char ch : word) {
+        if (fn) {
+            if (ch == ';') notesMoveVertical(-1);
+            else if (ch == '.') notesMoveVertical(1);
+            else if (ch == ',') { if (note_cursor > 0) note_cursor--; }
+            else if (ch == '/') { if (note_cursor < note_buffer.length()) note_cursor++; }
+        } else if (isprint((unsigned char)ch)) {
+            notesInsertChar(ch);
+        }
+    }
+}
+
+bool notesEditorCaptures() {
+    return current_screen == UI_NOTES && notes_editing && !manual_health_active && !help_overlay_active &&
+           overlay_mode == OVERLAY_NONE && !screen_selector_active && !text_input_active;
 }
 
 void createDefaultShopCatalog() {
@@ -1390,6 +1603,28 @@ void finishTextInput() {
             sk->details[MAX_SKILL_DETAILS_LEN - 1] = '\0';
             saveSkills();
             setStatus("Skill details updated");
+        }
+    } else if (input_purpose == INPUT_NEW_NOTE_CATEGORY) {
+        String saved_name;
+        if (storage_ready && save_load_system.createNoteCategory(String(text_input_buffer), saved_name)) {
+            notesRefreshAll();
+            for (uint8_t i = 0; i < note_category_count; i++) {
+                if (note_categories[i] == saved_name) selected_note_category = i;
+            }
+            selected_note_file = 0;
+            notesRefreshFiles();
+            setStatus("Note category created");
+        } else {
+            setStatus("Category create failed");
+        }
+    } else if (input_purpose == INPUT_NEW_NOTE_NAME) {
+        String saved_name;
+        if (note_category_count > 0 &&
+            save_load_system.createNote(note_categories[selected_note_category], String(text_input_buffer), saved_name)) {
+            notesRefreshFiles();
+            notesOpen(note_categories[selected_note_category], saved_name);
+        } else {
+            setStatus("Note create failed");
         }
     } else if (input_purpose == INPUT_MATH_QUIZ_ANSWER) {
         // Parse user answer — use strtoll and require full-string consumption so that
@@ -1954,6 +2189,9 @@ void handleNavCommand(NavCommand cmd) {
                     selected_skill_index = 0;
                 } else if (screen_selector_index == 8) { // SETTINGS (index 8 in new order)
                     sett_section = (SettingsSection)screen_selector_sub_index;
+                } else if (screen_selector_index == 9 && sub_count > 0) { // NOTES
+                    selected_note_category = screen_selector_sub_index;
+                    selected_note_file = 0;
                 }
                 const char* sub_name = getSelectorSubName(screen_selector_index, screen_selector_sub_index);
                 closeScreenSelector();
@@ -2160,10 +2398,9 @@ void handleNavCommand(NavCommand cmd) {
             if (skill_xp_edit_value >= 0) {
                 level_system.addXP((uint32_t)skill_xp_edit_value);
             } else {
-                uint32_t remove_amt = (uint32_t)(-skill_xp_edit_value);
-                uint32_t cur_xp = level_system.getCurrentXP();
-                level_system.setCurrentXP(cur_xp >= remove_amt ? cur_xp - remove_amt : 0);
+                level_system.removeXP((uint32_t)(-skill_xp_edit_value));
             }
+            syncHealthToPlayerLevel();
             hud_levelup_pending = 0;
             hud_display_level = level_system.getLevel();
             hud_level_anim = (float)level_system.getXPProgress();
@@ -3112,9 +3349,41 @@ void handleNavCommand(NavCommand cmd) {
                     save_load_system.saveGlobalConfig(cfg);
                     setStatus(cfg.skill_xp_split ? "Skill XP split ON" : "Skill XP split OFF", 1200);
                 }
+            } else if (sett_section == SETT_NOTES) {
+                GlobalSettings& cfg = settings_system.settings();
+                if (cmd == NAV_SELECT) {
+                    cfg.notes_autosave = !cfg.notes_autosave;
+                    save_load_system.saveGlobalConfig(cfg);
+                    setStatus(cfg.notes_autosave ? "Notes autosave ON" : "Notes autosave OFF", 1200);
+                } else if (cmd == NAV_UP || cmd == NAV_DOWN) {
+                    if (cmd == NAV_UP && cfg.notes_autosave_minutes < 60) cfg.notes_autosave_minutes++;
+                    if (cmd == NAV_DOWN && cfg.notes_autosave_minutes > 1) cfg.notes_autosave_minutes--;
+                    save_load_system.saveGlobalConfig(cfg);
+                    char buf[40]; snprintf(buf, sizeof(buf), "Autosave every %d min", cfg.notes_autosave_minutes);
+                    setStatus(buf, 1000);
+                }
             }
             break;
         }
+
+        case UI_NOTES:
+            if (notes_editing) break;
+            if (cmd == NAV_LEFT && selected_note_category > 0) {
+                selected_note_category--;
+                selected_note_file = 0;
+                notesRefreshFiles();
+            } else if (cmd == NAV_RIGHT && selected_note_category + 1 < note_category_count) {
+                selected_note_category++;
+                selected_note_file = 0;
+                notesRefreshFiles();
+            } else if (cmd == NAV_UP && selected_note_file > 0) {
+                selected_note_file--;
+            } else if (cmd == NAV_DOWN && selected_note_file + 1 < note_file_count) {
+                selected_note_file++;
+            } else if (cmd == NAV_SELECT && note_file_count > 0) {
+                notesOpen(note_categories[selected_note_category], note_files[selected_note_file]);
+            }
+            break;
 
         case UI_HELP:
             if (cmd == NAV_LEFT && help_page > 0) help_page--;
@@ -3477,6 +3746,16 @@ void handleKeyInput(char key) {
             }
             break;
 
+        case UI_NOTES:
+            if (notes_editing) break;
+            if (key == 'c' || key == 'C') {
+                beginTextInput(INPUT_NEW_NOTE_CATEGORY);
+            } else if (key == 'n' || key == 'N') {
+                if (note_category_count > 0) beginTextInput(INPUT_NEW_NOTE_NAME);
+                else setStatus("Create a category first (C)");
+            }
+            break;
+
         case UI_HELP:
             if (key == ',' || key == '<') {
                 if (help_page > 0) help_page--;
@@ -3646,6 +3925,7 @@ void renderUI() {
     else if (current_screen == UI_SETTINGS) screen_name = "SETT";
     else if (current_screen == UI_HELP) screen_name = "HELP";
     else if (current_screen == UI_ALARMS) screen_name = "ALARMS";
+    else if (current_screen == UI_NOTES) screen_name = "NOTES";
 
     ui_canvas.fillRoundRect(0, 0, 240, 20, 4, accent);
     ui_canvas.setTextColor(BLACK, accent);
@@ -3783,6 +4063,10 @@ void renderUI() {
         else scroll_text += ",/:Section  ;/.:Value  ENT:Apply  TAB:Menu";
     } else if (current_screen == UI_HELP) {
         scroll_text += "Read guide  H:Close help overlay  TAB:Menu";
+    } else if (current_screen == UI_NOTES) {
+        scroll_text += notes_editing
+            ? "Type freely  FN+;/./,// Move  CTRL+Z/Y Undo/Redo  CTRL+S Save  FN+ESC:Back  TAB:Menu  OPT+key:Shortcut"
+            : ";/.:Note  ,/:Category  ENT:Open  N:New note  C:New category  TAB:Menu";
     } else if (current_screen == UI_ALARMS) {
         scroll_text += "LEFT:Alarms/Timers  ;/.:Select  ENT:Toggle  DEL:Remove  A:Add  T:Add timer  SPC:Setup  TAB:Menu";
     }
@@ -4356,6 +4640,8 @@ void renderUI() {
         else if (input_purpose == INPUT_NEW_SHOP_ITEM_NAME) ui_canvas.println("New Shop Item Name:");
         else if (input_purpose == INPUT_SHOP_ITEM_NAME) ui_canvas.println("Edit Item Name:");
         else if (input_purpose == INPUT_SHOP_ITEM_DESC) ui_canvas.println("Edit Item Description:");
+        else if (input_purpose == INPUT_NEW_NOTE_CATEGORY) ui_canvas.println("New Note Category:");
+        else if (input_purpose == INPUT_NEW_NOTE_NAME) ui_canvas.println("New Note Name:");
         else if (input_purpose == INPUT_WIFI_PASSWORD) {
             const WiFiNetwork* net = settings_system.getScannedNetwork(sett_wifi_sel);
             if (net) ui_canvas.printf("Password for %s:\n", net->ssid);
@@ -4639,7 +4925,7 @@ void renderUI() {
         ui_canvas.println("4 load shared shop");
         ui_canvas.println("5 clear skills save");
     } else if (current_screen == UI_SETTINGS) {
-        static const char* sett_names[] = {"WiFi", "Timezone", "Time", "Health", "RandTask", "Feedback", "SkillXP"};
+        static const char* sett_names[] = {"WiFi", "Timezone", "Time", "Health", "RandTask", "Feedback", "SkillXP", "Notes"};
         ui_canvas.printf("SETTINGS [%s]\n", sett_names[(int)sett_section]);
 
         if (sett_section == SETT_WIFI) {
@@ -4772,6 +5058,14 @@ void renderUI() {
             if (cfg.skill_xp_split)
                 ui_canvas.printf("With split %d skills: %d each\n",
                     2, (int)(500 * cfg.skill_xp_ratio / 100 / 2));
+        } else if (sett_section == SETT_NOTES) {
+            const GlobalSettings& cfg = settings_system.settings();
+            ui_canvas.setTextColor(text, bg);
+            ui_canvas.printf("Autosave: %s\n", cfg.notes_autosave ? "ON" : "OFF");
+            ui_canvas.printf("Interval: %d min\n", (int)cfg.notes_autosave_minutes);
+            ui_canvas.setTextColor(muted, bg);
+            ui_canvas.println("Enter=toggle  ;/.=minutes (1-60)");
+            ui_canvas.println("Manual save: CTRL+S in a note");
         }
     } else if (current_screen == UI_HELP) {
         ui_canvas.setTextColor(text, bg);
@@ -4786,6 +5080,7 @@ void renderUI() {
             ui_canvas.println("Skills: E edit, SPC menu, ENT details");
             ui_canvas.println("Inventory: ENT use, SPC description");
             ui_canvas.println("Shop/Dash: arrows select, ENT action");
+            ui_canvas.println("Notes: CTRL+Z/Y undo/redo, CTRL+S save");
             ui_canvas.println("Use H here for the current page");
         } else if (help_page == 2) {
             const char* charge_label = !battery_charge_status_known ? "unknown" : (battery_charging ? "yes" : "no");
@@ -4806,10 +5101,12 @@ void renderUI() {
             ui_canvas.println("Green means fully charged");
         } else if (help_page == 3) {
             ui_canvas.println("Changelog");
-            ui_canvas.println("Profile task slot reset fix");
-            ui_canvas.println("Numerical HP and level-based max HP");
-            ui_canvas.println("Shop max HP effects and skill details");
-            ui_canvas.println("Battery alerts and scrolling UI");
+            ui_canvas.println("Notes screen with categories");
+            ui_canvas.println("Editor: undo/redo, CTRL+S, autosave");
+            ui_canvas.println("Main XP edits can lower levels");
+            ui_canvas.println("Numerical HP, level-based max HP");
+            ui_canvas.println("Shop max HP effects, skill details");
+            ui_canvas.println("Battery alerts, profile task fix");
         } else {
             ui_canvas.println("Credits");
             ui_canvas.println("Contributor: Sedrowow");
@@ -4819,6 +5116,65 @@ void renderUI() {
         }
         ui_canvas.setTextColor(muted, bg);
         ui_canvas.println("LEFT/RIGHT: help category");
+    } else if (current_screen == UI_NOTES) {
+        if (notes_editing) {
+            std::vector<uint16_t> starts, ends;
+            notesBuildLines(starts, ends);
+            uint16_t cursor_line = notesCursorLine(starts, ends);
+            if (cursor_line < note_scroll_line) note_scroll_line = cursor_line;
+            if (cursor_line >= note_scroll_line + NOTE_VISIBLE_LINES) note_scroll_line = cursor_line - NOTE_VISIBLE_LINES + 1;
+
+            ui_canvas.setTextColor(accent, bg);
+            ui_canvas.setCursor(6, 36);
+            ui_canvas.print(truncateUiText((note_open_category + "/" + note_open_name).c_str(), 32));
+            if (note_dirty) ui_canvas.print(" *");
+
+            ui_canvas.setTextColor(text, bg);
+            for (uint8_t i = 0; i < NOTE_VISIBLE_LINES; i++) {
+                uint16_t line = note_scroll_line + i;
+                if (line >= starts.size()) break;
+                ui_canvas.setCursor(6, 46 + i * 9);
+                ui_canvas.print(note_buffer.substring(starts[line], ends[line]));
+            }
+
+            int cursor_x = 6 + (note_cursor - starts[cursor_line]) * 6;
+            int cursor_y = 46 + (cursor_line - note_scroll_line) * 9;
+            ui_canvas.fillRect(cursor_x, cursor_y - 1, 6, 9, text);
+            if (note_cursor < note_buffer.length() && note_buffer[note_cursor] != '\n') {
+                ui_canvas.setTextColor(bg, text);
+                ui_canvas.setCursor(cursor_x, cursor_y);
+                ui_canvas.print(note_buffer[note_cursor]);
+            }
+        } else if (note_category_count == 0) {
+            ui_canvas.setTextColor(muted, bg);
+            ui_canvas.setCursor(6, 40);
+            ui_canvas.println("No note categories.");
+            ui_canvas.println("Press C to create one.");
+        } else {
+            ui_canvas.setTextColor(yellow, bg);
+            ui_canvas.setCursor(6, 38);
+            ui_canvas.printf("Cat[%d/%d]: %s", selected_note_category + 1, note_category_count,
+                             truncateUiText(note_categories[selected_note_category].c_str(), 20).c_str());
+            if (note_file_count == 0) {
+                ui_canvas.setTextColor(muted, bg);
+                ui_canvas.setCursor(6, 54);
+                ui_canvas.print("No notes. Press N");
+            }
+            uint8_t first_file = selected_note_file > 1 ? selected_note_file - 1 : 0;
+            for (uint8_t i = 0; i < 4 && first_file + i < note_file_count; i++) {
+                uint8_t idx = first_file + i;
+                uint16_t row_bg = (idx == selected_note_file) ? accent : panel;
+                uint16_t row_fg = (idx == selected_note_file) ? BLACK : text;
+                int y = 50 + i * 12;
+                ui_canvas.fillRoundRect(4, y, 232, 11, 2, row_bg);
+                ui_canvas.setTextColor(row_fg, row_bg);
+                ui_canvas.setCursor(8, y + 2);
+                ui_canvas.print(truncateUiText(note_files[idx].c_str(), 34));
+            }
+            ui_canvas.setTextColor(muted, bg);
+            ui_canvas.setCursor(6, 108);
+            ui_canvas.print("ENT=open  N=new  C=category");
+        }
     } else if (current_screen == UI_ALARMS) {
         // Left pane: alarms; right pane: timers
         // Divider
@@ -4950,6 +5306,12 @@ void renderUI() {
         } else if (current_screen == UI_INVENTORY) {
             ui_canvas.println("INVENTORY: view owned items");
             ui_canvas.println("ENT=use  SPC=description");
+        } else if (current_screen == UI_NOTES) {
+            ui_canvas.println("NOTES: text files per category");
+            ui_canvas.println("N=new note  C=new category");
+            ui_canvas.println("Editing: FN+;/./,// = move");
+            ui_canvas.println("CTRL+Z/Y/S undo redo save");
+            ui_canvas.println("FN+ESC=back  OPT+key=shortcut");
         } else if (current_screen == UI_HELP) {
             ui_canvas.println("HELP: browse categorized pages");
             ui_canvas.println("LEFT/RIGHT changes the page");
@@ -5140,6 +5502,18 @@ void loop() {
     health_system.setCurrentTime(time_sync.getCurrentTime());
     syncHealthToPlayerLevel();
 
+    static UiScreen last_loop_screen = UI_DASHBOARD;
+    if (current_screen != last_loop_screen) {
+        if (current_screen == UI_NOTES) notesRefreshAll();
+        last_loop_screen = current_screen;
+    }
+
+    const GlobalSettings& notes_cfg = settings_system.settings();
+    if (notes_editing && note_dirty && notes_cfg.notes_autosave &&
+        millis() - note_last_save_ms >= (uint32_t)notes_cfg.notes_autosave_minutes * 60000UL) {
+        if (notesSaveCurrent()) setStatus("Note autosaved", 1200);
+    }
+
     // Check alarms and snooze re-rings
     {
         time_t now_alarm = time_sync.getCurrentTime();
@@ -5294,6 +5668,28 @@ void loop() {
         setStatus("Delete cancelled", 1000);
     }
 
+    // Key repeat for the notes editor; the main input path below only fires on key changes.
+    if (!alarm_is_ringing && !timer_is_ringing && notesEditorCaptures()) {
+        static uint32_t repeat_started_ms = 0;
+        static uint32_t repeat_last_ms = 0;
+        if (M5Cardputer.Keyboard.isChange()) {
+            repeat_started_ms = millis();
+            repeat_last_ms = millis();
+        } else {
+            auto& rk = M5Cardputer.Keyboard.keysState();
+            bool del_held = M5Cardputer.Keyboard.isKeyPressed(KEY_BACKSPACE);
+            bool esc_chord = false;
+            for (char ch : rk.word) {
+                if (ch == '`' && rk.fn) esc_chord = true;
+            }
+            bool held = (!rk.word.empty() || del_held) && !rk.opt && !rk.ctrl && !esc_chord;
+            if (held && millis() - repeat_started_ms > 350 && millis() - repeat_last_ms >= 70) {
+                repeat_last_ms = millis();
+                notesApplyKeys(rk.word, false, del_held, rk.fn, false);
+            }
+        }
+    }
+
     if (M5Cardputer.Keyboard.isChange()) {
         M5Cardputer.Keyboard.updateKeysState();
         auto& ks = M5Cardputer.Keyboard.keysState();
@@ -5342,7 +5738,20 @@ void loop() {
         }
 
         if (tab_pressed) {
+            notesSaveCurrent();
             if (!screen_selector_active) openScreenSelector();
+            return;
+        }
+
+        // Notes editor owns the keyboard; OPT+key falls through to the normal shortcuts.
+        if (notesEditorCaptures()) {
+            if (ks.fn && backtick_pressed) {
+                notesCloseEditor();
+            } else if (ks.opt) {
+                for (char ch : ks.word) handleKeyInput(ch);
+            } else {
+                notesApplyKeys(ks.word, ks.enter, del_pressed, ks.fn, ks.ctrl);
+            }
             return;
         }
         if (backtick_pressed) {

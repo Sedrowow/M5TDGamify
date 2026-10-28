@@ -45,6 +45,8 @@ struct GlobalSettings {
     bool health_level_scaling;
     bool health_level_percent;
     uint16_t health_level_growth;
+    bool notes_autosave;
+    uint8_t notes_autosave_minutes;
     uint8_t health_wake_hour;
     uint8_t health_sleep_hour;
     bool visual_feedback_enabled;

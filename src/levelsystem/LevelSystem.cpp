@@ -54,6 +54,26 @@ uint16_t LevelSystem::addXPWithMultiplier(uint32_t xp_amount, float health_multi
     return levels_gained;
 }
 
+void LevelSystem::removeXP(uint32_t xp_amount) {
+    if (xp_amount <= current_xp) {
+        current_xp -= xp_amount;
+        return;
+    }
+
+    uint32_t remaining = xp_amount - current_xp;
+    current_xp = 0;
+    while (remaining > 0 && current_level > MIN_LEVEL) {
+        current_level--;
+        uint32_t level_size = getXPForNextLevel();
+        if (remaining <= level_size) {
+            current_xp = level_size - remaining;
+            remaining = 0;
+        } else {
+            remaining -= level_size;
+        }
+    }
+}
+
 uint32_t LevelSystem::getXPForNextLevel() const {
     return calculateXPForLevel(current_level + 1);
 }
