@@ -40,7 +40,7 @@ The serial monitor uses 115200 baud. `platformio.ini` pins the platform (espress
 | Inventory | Up/down selects an item, `ENTER` uses it, `SPACE` opens its description. |
 | Profiles | Up/down selects a profile, `ENTER` switches, `N` creates, `G` edits its description, `DEL` deletes. Creating and managing multiple profiles requires SD. |
 | Alarms | Left switches alarm/timer panes. `A` adds an alarm, `T` adds a timer in the timer pane, `SPACE` opens setup, `ENTER` toggles, and `DEL` removes. |
-| Notes | Left/right selects a category, up/down selects a note, `ENTER` opens it, `N` creates a note, `C` creates a category. See Notes Editor below. |
+| Notes | Left/right selects a category, up/down selects a note, `ENTER` opens it, `E` toggles edit mode. In edit mode `SPACE` or `ENTER` opens a menu to rename, delete, or create notes and categories (categories can only be deleted when empty). See Notes Editor below. |
 | Help | Left/right switches Overview, Controls, Battery Info, Changelog, and Credits pages. |
 
 ### Health Controls

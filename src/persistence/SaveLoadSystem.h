@@ -137,6 +137,10 @@ public:
     bool createNote(const String& category, const String& name, String& saved_name);
     bool readNote(const String& category, const String& name, String& content);
     bool writeNote(const String& category, const String& name, const String& content);
+    bool renameNote(const String& category, const String& old_name, const String& new_name, String& saved_name);
+    bool renameNoteCategory(const String& old_name, const String& new_name, String& saved_name);
+    bool deleteNote(const String& category, const String& name);
+    bool deleteNoteCategory(const String& category);
 };
 
 #endif

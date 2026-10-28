@@ -72,7 +72,9 @@ enum TextInputPurpose {
     INPUT_TIMER_NAME = 17,
     INPUT_MATH_QUIZ_ANSWER = 18,
     INPUT_NEW_NOTE_CATEGORY = 19,
-    INPUT_NEW_NOTE_NAME = 20
+    INPUT_NEW_NOTE_NAME = 20,
+    INPUT_RENAME_NOTE = 21,
+    INPUT_RENAME_NOTE_CATEGORY = 22
 };
 
 enum NavCommand {
@@ -130,7 +132,9 @@ enum OverlayMode {
     OVERLAY_SKILL_DETAILS = 21,
     OVERLAY_ITEM_DETAILS = 22,
     OVERLAY_BATTERY_LOW = 23,
-    OVERLAY_HEALTH_SCHEDULE = 24
+    OVERLAY_HEALTH_SCHEDULE = 24,
+    OVERLAY_NOTES_MENU = 25,
+    OVERLAY_NOTES_DELETE_CONFIRM = 26
 };
 
 UiScreen current_screen = UI_DASHBOARD;
@@ -946,6 +950,11 @@ String note_buffer;
 uint16_t note_cursor = 0;
 int32_t note_sel_anchor = -1;
 String note_clipboard;
+bool notes_edit_mode = false;
+uint8_t notes_menu_index = 0;
+bool notes_delete_is_category = false;
+static const uint8_t NOTES_MENU_COUNT = 6;
+static const char* NOTES_MENU_ITEMS[NOTES_MENU_COUNT] = {"Rename Note", "Delete Note", "New Note", "Rename Category", "Delete Category", "New Category"};
 uint16_t note_scroll_line = 0;
 String note_open_category;
 String note_open_name;
@@ -1527,6 +1536,14 @@ void beginTextInput(TextInputPurpose purpose, uint16_t arg = 0) {
     text_input_buffer[0] = '\0';
 }
 
+// Opens the text prompt pre-filled with the current name.
+void notesBeginRename(TextInputPurpose purpose, const String& current) {
+    beginTextInput(purpose);
+    strncpy(text_input_buffer, current.c_str(), sizeof(text_input_buffer) - 1);
+    text_input_buffer[sizeof(text_input_buffer) - 1] = '\0';
+    text_input_len = strlen(text_input_buffer);
+}
+
 void cancelTextInput() {
     text_input_active = false;
     input_purpose = INPUT_NONE;
@@ -1710,6 +1727,32 @@ void finishTextInput() {
             notesOpen(note_categories[selected_note_category], saved_name);
         } else {
             setStatus("Note create failed");
+        }
+    } else if (input_purpose == INPUT_RENAME_NOTE) {
+        String saved_name;
+        if (note_category_count > 0 && note_file_count > 0 &&
+            save_load_system.renameNote(note_categories[selected_note_category], note_files[selected_note_file],
+                                        String(text_input_buffer), saved_name)) {
+            notesRefreshFiles();
+            for (uint8_t i = 0; i < note_file_count; i++) {
+                if (note_files[i] == saved_name) selected_note_file = i;
+            }
+            setStatus("Note renamed");
+        } else {
+            setStatus("Rename failed");
+        }
+    } else if (input_purpose == INPUT_RENAME_NOTE_CATEGORY) {
+        String saved_name;
+        if (note_category_count > 0 &&
+            save_load_system.renameNoteCategory(note_categories[selected_note_category], String(text_input_buffer), saved_name)) {
+            notesRefreshAll();
+            for (uint8_t i = 0; i < note_category_count; i++) {
+                if (note_categories[i] == saved_name) selected_note_category = i;
+            }
+            notesRefreshFiles();
+            setStatus("Category renamed");
+        } else {
+            setStatus("Rename failed");
         }
     } else if (input_purpose == INPUT_MATH_QUIZ_ANSWER) {
         // Parse user answer — use strtoll and require full-string consumption so that
@@ -2382,6 +2425,57 @@ void handleNavCommand(NavCommand cmd) {
     }
 
     if (overlay_mode == OVERLAY_SKILL_DELETE_CONFIRM) {
+        if (cmd == NAV_BACK) {
+            overlay_mode = OVERLAY_NONE;
+            setStatus("Delete cancelled", 1000);
+        }
+        return;
+    }
+
+    if (overlay_mode == OVERLAY_NOTES_MENU) {
+        if (cmd == NAV_UP && notes_menu_index > 0) notes_menu_index--;
+        else if (cmd == NAV_DOWN && notes_menu_index + 1 < NOTES_MENU_COUNT) notes_menu_index++;
+        else if (cmd == NAV_SELECT) {
+            overlay_mode = OVERLAY_NONE;
+            bool has_category = note_category_count > 0;
+            bool has_note = has_category && note_file_count > 0;
+            if (notes_menu_index == 0) {
+                if (has_note) notesBeginRename(INPUT_RENAME_NOTE, note_files[selected_note_file]);
+                else setStatus("No note selected");
+            } else if (notes_menu_index == 1) {
+                if (has_note) {
+                    notes_delete_is_category = false;
+                    profile_delete_confirm_until = millis() + 5000;
+                    overlay_mode = OVERLAY_NOTES_DELETE_CONFIRM;
+                } else {
+                    setStatus("No note selected");
+                }
+            } else if (notes_menu_index == 2) {
+                if (has_category) beginTextInput(INPUT_NEW_NOTE_NAME);
+                else setStatus("Create a category first");
+            } else if (notes_menu_index == 3) {
+                if (has_category) notesBeginRename(INPUT_RENAME_NOTE_CATEGORY, note_categories[selected_note_category]);
+                else setStatus("No category selected");
+            } else if (notes_menu_index == 4) {
+                if (!has_category) {
+                    setStatus("No category selected");
+                } else if (note_file_count > 0) {
+                    setStatus("Category must be empty", 1800);
+                } else {
+                    notes_delete_is_category = true;
+                    profile_delete_confirm_until = millis() + 5000;
+                    overlay_mode = OVERLAY_NOTES_DELETE_CONFIRM;
+                }
+            } else {
+                beginTextInput(INPUT_NEW_NOTE_CATEGORY);
+            }
+        } else if (cmd == NAV_BACK) {
+            overlay_mode = OVERLAY_NONE;
+        }
+        return;
+    }
+
+    if (overlay_mode == OVERLAY_NOTES_DELETE_CONFIRM) {
         if (cmd == NAV_BACK) {
             overlay_mode = OVERLAY_NONE;
             setStatus("Delete cancelled", 1000);
@@ -3464,8 +3558,13 @@ void handleNavCommand(NavCommand cmd) {
                 selected_note_file--;
             } else if (cmd == NAV_DOWN && selected_note_file + 1 < note_file_count) {
                 selected_note_file++;
-            } else if (cmd == NAV_SELECT && note_file_count > 0) {
-                notesOpen(note_categories[selected_note_category], note_files[selected_note_file]);
+            } else if (cmd == NAV_SELECT) {
+                if (notes_edit_mode) {
+                    notes_menu_index = 0;
+                    overlay_mode = OVERLAY_NOTES_MENU;
+                } else if (note_file_count > 0) {
+                    notesOpen(note_categories[selected_note_category], note_files[selected_note_file]);
+                }
             }
             break;
 
@@ -3580,6 +3679,31 @@ void handleKeyInput(char key) {
                     saveShopData();
                     setStatus("Recipe removed");
                 } else { setStatus("Remove failed"); }
+            }
+        } else if (key == 'n' || key == 'N' || key == '`') {
+            overlay_mode = OVERLAY_NONE;
+            setStatus("Delete cancelled", 1000);
+        }
+        return;
+    }
+
+    if (overlay_mode == OVERLAY_NOTES_DELETE_CONFIRM) {
+        if (key == 'y' || key == 'Y') {
+            overlay_mode = OVERLAY_NONE;
+            if (notes_delete_is_category) {
+                if (note_category_count > 0 && save_load_system.deleteNoteCategory(note_categories[selected_note_category])) {
+                    selected_note_file = 0;
+                    notesRefreshAll();
+                    setStatus("Category deleted");
+                } else {
+                    setStatus("Delete failed");
+                }
+            } else if (note_file_count > 0 &&
+                       save_load_system.deleteNote(note_categories[selected_note_category], note_files[selected_note_file])) {
+                notesRefreshFiles();
+                setStatus("Note deleted");
+            } else {
+                setStatus("Delete failed");
             }
         } else if (key == 'n' || key == 'N' || key == '`') {
             overlay_mode = OVERLAY_NONE;
@@ -3831,12 +3955,13 @@ void handleKeyInput(char key) {
             break;
 
         case UI_NOTES:
-            if (notes_editing) break;
-            if (key == 'c' || key == 'C') {
-                beginTextInput(INPUT_NEW_NOTE_CATEGORY);
-            } else if (key == 'n' || key == 'N') {
-                if (note_category_count > 0) beginTextInput(INPUT_NEW_NOTE_NAME);
-                else setStatus("Create a category first (C)");
+            if (notes_editing || overlay_mode != OVERLAY_NONE) break;
+            if (key == 'e' || key == 'E') {
+                notes_edit_mode = !notes_edit_mode;
+                setStatus(notes_edit_mode ? "Notes edit ON (SPC=menu)" : "Notes edit OFF", 1200);
+            } else if (notes_edit_mode && key == ' ') {
+                notes_menu_index = 0;
+                overlay_mode = OVERLAY_NOTES_MENU;
             }
             break;
 
@@ -4150,7 +4275,9 @@ void renderUI() {
     } else if (current_screen == UI_NOTES) {
         scroll_text += notes_editing
             ? "Type freely  CTRL+;/./,// Move  ALT+;/./,// Select  CTRL+C/V Copy/Paste  CTRL+Z/Y Undo/Redo  CTRL+S Save  CTRL+`:Back  TAB:Menu  OPT+key:Shortcut"
-            : ";/.:Note  ,/:Category  ENT:Open  N:New note  C:New category  TAB:Menu";
+            : (notes_edit_mode
+                ? ";/.:Note  ,/:Category  SPC/ENT:Menu (rename/delete/new)  E:ExitEdit  TAB:Menu"
+                : ";/.:Note  ,/:Category  ENT:Open  E:Edit  TAB:Menu");
     } else if (current_screen == UI_ALARMS) {
         scroll_text += "LEFT:Alarms/Timers  ;/.:Select  ENT:Toggle  DEL:Remove  A:Add  T:Add timer  SPC:Setup  TAB:Menu";
     }
@@ -4487,6 +4614,40 @@ void renderUI() {
             ui_canvas.setTextColor(muted, panel);
             ui_canvas.setCursor(24, 78);
             ui_canvas.printf("Y = yes   N = no (%lus)", (unsigned long)remain);
+        } else if (overlay_mode == OVERLAY_NOTES_MENU) {
+            const uint8_t window = 5;
+            bool has_category = note_category_count > 0;
+            bool has_note = has_category && note_file_count > 0;
+            uint8_t start_idx = notes_menu_index > 2 ? notes_menu_index - 2 : 0;
+            if (start_idx + window > NOTES_MENU_COUNT) start_idx = NOTES_MENU_COUNT - window;
+            ui_canvas.setCursor(24, 36);
+            ui_canvas.printf("NOTES EDIT  %d/%d", notes_menu_index + 1, NOTES_MENU_COUNT);
+            for (uint8_t i = 0; i < window; i++) {
+                uint8_t idx = start_idx + i;
+                bool disabled = (idx <= 1) ? !has_note : (idx <= 4 ? !has_category : false);
+                bool selected = (idx == notes_menu_index);
+                uint16_t row_bg = selected ? accent : bg;
+                uint16_t row_fg = disabled ? (selected ? 0xC618 : muted) : (selected ? BLACK : text);
+                ui_canvas.fillRoundRect(24, 47 + i * 11, 192, 10, 2, row_bg);
+                ui_canvas.setTextColor(row_fg, row_bg);
+                ui_canvas.setCursor(28, 48 + i * 11);
+                ui_canvas.print(NOTES_MENU_ITEMS[idx]);
+            }
+        } else if (overlay_mode == OVERLAY_NOTES_DELETE_CONFIRM) {
+            String del_name = "?";
+            if (note_category_count > 0) {
+                if (notes_delete_is_category) del_name = note_categories[selected_note_category];
+                else if (note_file_count > 0) del_name = note_files[selected_note_file];
+            }
+            uint32_t remain = (profile_delete_confirm_until > millis()) ? ((profile_delete_confirm_until - millis() + 999) / 1000) : 0;
+            ui_canvas.setCursor(24, 42);
+            ui_canvas.print(notes_delete_is_category ? "DELETE NOTE CATEGORY" : "DELETE NOTE");
+            ui_canvas.setTextColor(yellow, panel);
+            ui_canvas.setCursor(24, 58);
+            ui_canvas.println(truncateUiText(del_name.c_str(), 22).c_str());
+            ui_canvas.setTextColor(muted, panel);
+            ui_canvas.setCursor(24, 78);
+            ui_canvas.printf("Y = yes   N = no (%lus)", (unsigned long)remain);
         } else if (overlay_mode == OVERLAY_SKILL_QUICK_MENU) {
             const SkillCategory* qcat = selectedCategory();
             const Skill* qsk = selectedSkillInSelectedCategory();
@@ -4724,6 +4885,8 @@ void renderUI() {
         else if (input_purpose == INPUT_SHOP_ITEM_DESC) ui_canvas.println("Edit Item Description:");
         else if (input_purpose == INPUT_NEW_NOTE_CATEGORY) ui_canvas.println("New Note Category:");
         else if (input_purpose == INPUT_NEW_NOTE_NAME) ui_canvas.println("New Note Name:");
+        else if (input_purpose == INPUT_RENAME_NOTE) ui_canvas.println("Rename Note:");
+        else if (input_purpose == INPUT_RENAME_NOTE_CATEGORY) ui_canvas.println("Rename Note Category:");
         else if (input_purpose == INPUT_WIFI_PASSWORD) {
             const WiFiNetwork* net = settings_system.getScannedNetwork(sett_wifi_sel);
             if (net) ui_canvas.printf("Password for %s:\n", net->ssid);
@@ -5183,7 +5346,7 @@ void renderUI() {
             ui_canvas.println("Green means fully charged");
         } else if (help_page == 3) {
             ui_canvas.println("Changelog");
-            ui_canvas.println("Notes screen with categories");
+            ui_canvas.println("Notes: categories, rename, delete");
             ui_canvas.println("Editor: select, copy, paste, undo");
             ui_canvas.println("Main XP edits can lower levels");
             ui_canvas.println("Numerical HP, level-based max HP");
@@ -5248,7 +5411,7 @@ void renderUI() {
             ui_canvas.setTextColor(muted, bg);
             ui_canvas.setCursor(6, 40);
             ui_canvas.println("No note categories.");
-            ui_canvas.println("Press C to create one.");
+            ui_canvas.println("Press E, then SPC to create one.");
         } else {
             ui_canvas.setTextColor(yellow, bg);
             ui_canvas.setCursor(6, 38);
@@ -5257,7 +5420,7 @@ void renderUI() {
             if (note_file_count == 0) {
                 ui_canvas.setTextColor(muted, bg);
                 ui_canvas.setCursor(6, 54);
-                ui_canvas.print("No notes. Press N");
+                ui_canvas.print("No notes. E, then SPC=New Note");
             }
             uint8_t first_file = selected_note_file > 1 ? selected_note_file - 1 : 0;
             for (uint8_t i = 0; i < 4 && first_file + i < note_file_count; i++) {
@@ -5270,9 +5433,9 @@ void renderUI() {
                 ui_canvas.setCursor(8, y + 2);
                 ui_canvas.print(truncateUiText(note_files[idx].c_str(), 34));
             }
-            ui_canvas.setTextColor(muted, bg);
+            ui_canvas.setTextColor(notes_edit_mode ? accent : muted, bg);
             ui_canvas.setCursor(6, 108);
-            ui_canvas.print("ENT=open  N=new  C=category");
+            ui_canvas.print(notes_edit_mode ? "EDIT MODE  SPC/ENT=menu  E=exit" : "ENT=open  E=edit mode");
         }
     } else if (current_screen == UI_ALARMS) {
         // Left pane: alarms; right pane: timers
@@ -5407,7 +5570,7 @@ void renderUI() {
             ui_canvas.println("ENT=use  SPC=description");
         } else if (current_screen == UI_NOTES) {
             ui_canvas.println("NOTES: text files per category");
-            ui_canvas.println("N=new note  C=new category");
+            ui_canvas.println("E=edit mode: new/rename/delete");
             ui_canvas.println("Editing: CTRL+;/./,// = move");
             ui_canvas.println("ALT+nav select  CTRL+C/V copy/paste");
             ui_canvas.println("CTRL+Z/Y/S undo redo save");
@@ -5763,7 +5926,9 @@ void loop() {
         setStatus("Health auto-set", 1500);
     }
 
-    if ((overlay_mode == OVERLAY_PROFILE_DELETE || overlay_mode == OVERLAY_SHOP_CONFIRM_DELETE || overlay_mode == OVERLAY_SKILL_DELETE_CONFIRM) && millis() >= profile_delete_confirm_until) {
+    if ((overlay_mode == OVERLAY_PROFILE_DELETE || overlay_mode == OVERLAY_SHOP_CONFIRM_DELETE ||
+         overlay_mode == OVERLAY_SKILL_DELETE_CONFIRM || overlay_mode == OVERLAY_NOTES_DELETE_CONFIRM) &&
+        millis() >= profile_delete_confirm_until) {
         overlay_mode = OVERLAY_NONE;
         setStatus("Delete cancelled", 1000);
     }

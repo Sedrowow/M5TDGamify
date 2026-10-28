@@ -1430,6 +1430,40 @@ bool SaveLoadSystem::writeNote(const String& category, const String& name, const
     return writeTextFile(notePath(category, name), content);
 }
 
+// FAT is case-insensitive, so a case-only rename must skip the exists() check.
+bool SaveLoadSystem::renameNote(const String& category, const String& old_name, const String& new_name, String& saved_name) {
+    saved_name = sanitizeProfileName(new_name);
+    if (!active_fs) return false;
+    if (saved_name == old_name) return true;
+    String target = notePath(category, saved_name);
+    if (!saved_name.equalsIgnoreCase(old_name) && active_fs->exists(target.c_str())) {
+        last_error = "Note already exists";
+        return false;
+    }
+    return active_fs->rename(notePath(category, old_name).c_str(), target.c_str());
+}
+
+bool SaveLoadSystem::renameNoteCategory(const String& old_name, const String& new_name, String& saved_name) {
+    saved_name = sanitizeProfileName(new_name);
+    if (!active_fs) return false;
+    if (saved_name == old_name) return true;
+    String target = noteCategoryDir(saved_name);
+    if (!saved_name.equalsIgnoreCase(old_name) && active_fs->exists(target.c_str())) {
+        last_error = "Category already exists";
+        return false;
+    }
+    return active_fs->rename(noteCategoryDir(old_name).c_str(), target.c_str());
+}
+
+bool SaveLoadSystem::deleteNote(const String& category, const String& name) {
+    return active_fs && active_fs->remove(notePath(category, name).c_str());
+}
+
+// Fails while the folder still contains files.
+bool SaveLoadSystem::deleteNoteCategory(const String& category) {
+    return active_fs && active_fs->rmdir(noteCategoryDir(category).c_str());
+}
+
 bool SaveLoadSystem::saveAlarmsAndTimers(const AlarmEntry alarms[], uint8_t alarm_count,
                                          const TimerEntry timers[], uint8_t timer_count) {
     if (!active_fs) return false;
