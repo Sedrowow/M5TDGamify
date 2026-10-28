@@ -9,9 +9,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version label (e.g. 1.0). Leave blank to use tag or commit SHA.'
+        description: 'Optional version override (e.g. 1.21). Leave blank to increment the latest version.'
         required: false
-        default: '1.04'
+        default: ''
 
 jobs:
   build:
@@ -27,14 +27,48 @@ jobs:
 
       - name: Determine version
         id: version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            VERSION="${{ github.event.inputs.version }}"
+          if [[ -n "${REQUESTED_VERSION}" ]]; then
+            VERSION="${REQUESTED_VERSION}"
+            if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+$ ]]; then
+              echo "Version must use the major.minor format (for example, 1.21)." >&2
+              exit 1
+            fi
           elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF#refs/tags/v}"
+            if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+$ ]]; then
+              echo "Tag version must use the major.minor format (for example, v1.21)." >&2
+              exit 1
+            fi
           else
-            VERSION="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')_$(git rev-parse --short HEAD)"
+            latest_major=0
+            latest_minor=-1
+            while IFS= read -r -d '' file; do
+              filename="${file##*/}"
+              if [[ "${filename}" =~ ^M5TDG(amify)?\ ([0-9]+)\.([0-9]+)\.bin$ ]]; then
+                major=$((10#${BASH_REMATCH[2]}))
+                minor=$((10#${BASH_REMATCH[3]}))
+                if (( major > latest_major || (major == latest_major && minor > latest_minor) )); then
+                  latest_major="${major}"
+                  latest_minor="${minor}"
+                fi
+              fi
+            done < <(find "BUILD bins" -maxdepth 1 -type f -name '*.bin' -print0)
+
+            if (( latest_minor < 0 )); then
+              VERSION="1.0"
+            else
+              VERSION="${latest_major}.$((latest_minor + 1))"
+            fi
           fi
+
+          if [[ -e "BUILD bins/M5TDGamify ${VERSION}.bin" || -e "BUILD bins/M5TDG ${VERSION}.bin" ]]; then
+            echo "Firmware version ${VERSION} already exists in BUILD bins." >&2
+            exit 1
+          fi
+
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Binary version: ${VERSION}"
 
